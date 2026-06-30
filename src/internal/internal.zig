@@ -9,10 +9,13 @@ const socket_writable = @import("../eventing/impl.zig").socket_writable;
 const Socket = @import("../socket.zig");
 const SocketContext = @import("../socket_context.zig");
 
-pub const Timer = switch (build_opts.event_backend) {
-    .io_uring => @import("../io_uring/timer.zig"),
-    else => anyopaque,
-};
+// TODO: flesh out `io_uring` implementation
+// pub const Timer = switch (build_opts.event_backend) {
+//     .io_uring => @import("../io_uring/timer.zig"),
+//     else => anyopaque,
+// };
+
+pub const Timer = anyopaque;
 
 pub const PollType = enum(u8) {
     socket = 0,
