@@ -1,0 +1,7 @@
+key_file_name: [:0]const u8 = &.{},
+cert_file_name: [:0]const u8 = &.{},
+passphrase: [:0]const u8 = &.{},
+dh_params_file_name: [:0]const u8 = &.{},
+ca_file_name: [:0]const u8 = &.{},
+ssl_ciphers: [:0]const u8 = &.{},
+prefer_low_memory_usage: bool = false,
