@@ -1,0 +1,61 @@
+name: Test Examples
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test_libuv:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Run hammer test
+        run: zig build hammer_test -Doptimize=ReleaseFast -DWITH_LIBUV
+
+      - name: Run hammer test unix
+        run: zig build hammer_test_unix -Doptimize=ReleaseFast -DWITH_LIBUV
+
+  test_macos_kqueue:
+    strategy:
+      fail-fast: false
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Run hammer test
+        run: zig build hammer_test -Doptimize=ReleaseFast
+
+      - name: Run hammer test unix
+        run: zig build hammer_test_unix -Doptimize=ReleaseFast
+
+  test_linux_epoll:
+    strategy:
+      fail-fast: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Run hammer test
+        run: zig build hammer_test -Doptimize=ReleaseFast
+
+      - name: Run hammer test unix
+        run: zig build hammer_test_unix -Doptimize=ReleaseFast
