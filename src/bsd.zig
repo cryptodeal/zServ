@@ -505,7 +505,11 @@ pub fn remoteAddr(fd: std.posix.socket_t, addr: *AddrT) !void {
 pub fn acceptSocket(fd: std.posix.socket_t, addr: *AddrT) !std.posix.socket_t {
     addr.len = @sizeOf(std.posix.sockaddr.storage);
     const accepted_fd: std.posix.socket_t = switch (builtin.os.tag) {
-        .linux => @intCast(std.os.linux.accept4(fd, @ptrCast(@alignCast(&addr.mem)), &addr.len, std.os.linux.SOCK.CLOEXEC | std.os.linux.SOCK.NONBLOCK)),
+        .linux => blk: {
+            const ret = std.c.accept4(fd, @ptrCast(@alignCast(addr)), &addr.len, std.os.linux.SOCK.CLOEXEC | std.os.linux.SOCK.NONBLOCK);
+            if (ret == -1) return error.AcceptSocket;
+            break :blk @intCast(ret);
+        },
         else => |tag| blk: {
             const ret = std.c.accept(fd, @ptrCast(@alignCast(addr)), &addr.len);
             if (ret == -1) return error.AcceptSocket;
@@ -546,7 +550,7 @@ pub fn write2(fd: std.posix.socket_t, header: []const u8, payload: []const u8) i
 pub fn send(fd: std.posix.socket_t, buf: []const u8, msg_more: bool) isize {
     const msg_nosignal = if (@hasDecl(std.posix.MSG, "NOSIGNAL")) std.c.MSG.NOSIGNAL else 0;
     if (@hasDecl(std.posix.MSG, "MORE"))
-        return std.c.send(fd, @ptrCast(@alignCast(buf.ptr)), buf.len, @as(u32, @intCast(@intFromBool(msg_more) * std.c.MSG.MORE)) | msg_nosignal)
+        return std.c.send(fd, @ptrCast(@alignCast(buf.ptr)), buf.len, @as(u32, @intCast(@intFromBool(msg_more))) * std.c.MSG.MORE | msg_nosignal)
     else
         return std.c.send(fd, @ptrCast(@alignCast(buf.ptr)), buf.len, msg_nosignal);
 }

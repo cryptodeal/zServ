@@ -10,8 +10,9 @@ jobs:
   test_libuv:
     strategy:
       fail-fast: false
+      # TODO: Add windows support for libuv (zig is missing `std.c.addrinfo` on windows)
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

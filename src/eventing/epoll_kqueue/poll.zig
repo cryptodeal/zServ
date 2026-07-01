@@ -59,9 +59,10 @@ pub fn pollType(self: *const Self) PollType {
 pub fn start(self: *Self, loop: *Loop, events_: u32) void {
     self.state.poll_type = @enumFromInt(@intFromEnum(self.pollType()) | (if (events_ & constants.socket_readable != 0) @intFromEnum(PollType.polling_in) else 0) | (if (events_ & constants.socket_writable != 0) @intFromEnum(PollType.polling_out) else 0));
     if (build_opts.event_backend == .epoll) {
-        var event: std.os.linux.epoll_event = undefined;
-        event.events = events_;
-        event.data.ptr = @intFromPtr(self);
+        var event: std.os.linux.epoll_event = .{
+            .events = events_,
+            .data = .{ .ptr = @intFromPtr(self) },
+        };
         _ = std.os.linux.epoll_ctl(loop.fd, std.os.linux.EPOLL.CTL_ADD, self.state.fd, &event);
     } else {
         _ = utils.kqueueChange(loop.fd, self.state.fd, 0, events_, self);
@@ -109,10 +110,10 @@ pub fn fd(self: *Self) std.posix.fd_t {
     return self.state.fd;
 }
 
-pub fn acceptEvent(self: *Self) !usize {
+pub fn acceptEvent(self: *Self) usize {
     if (build_opts.event_backend == .epoll) {
-        const buf: u64 = undefined;
-        _ = try std.posix.read(self.fd(), std.mem.asBytes(buf));
+        var buf: u64 = undefined;
+        _ = std.os.linux.read(self.fd(), std.mem.asBytes(&buf).ptr, @sizeOf(u64));
         return buf;
     } else {
         return 0;

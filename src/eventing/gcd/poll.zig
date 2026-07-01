@@ -107,7 +107,7 @@ pub fn events(self: *const Self) u32 {
     return self.events_;
 }
 
-pub fn acceptEvent(_: *Self) !usize {
+pub fn acceptEvent(_: *Self) usize {
     return 0;
 }
 

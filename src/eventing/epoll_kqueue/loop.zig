@@ -38,7 +38,7 @@ pub fn init(allocator: std.mem.Allocator, _: ?*anyopaque, wakeup_cb: *const fn (
     errdefer allocator.destroy(self);
     self.* = .{
         .data = undefined,
-        .fd = if (build_opts.event_backend == .epoll) std.c.epoll_create1(std.os.linux.EPOLL.CLOEXEC) else std.c.kqueue(),
+        .fd = if (build_opts.event_backend == .epoll) @intCast(std.os.linux.epoll_create1(std.os.linux.EPOLL.CLOEXEC)) else std.c.kqueue(),
         .ext = try Extension.init(allocator, MaybeT),
     };
     self.data = try LoopData.init(allocator, self, wakeup_cb, pre_cb, post_cb);
@@ -57,7 +57,7 @@ pub fn run(self: *Self, allocator: std.mem.Allocator) !void {
     while (self.polls_count != 0) {
         try loop.pre(allocator, self);
         if (build_opts.event_backend == .epoll) {
-            self.ready_polls_count = std.os.linux.epoll_wait(self.fd, &self.ready_polls, 1024, -1);
+            self.ready_polls_count = @intCast(std.os.linux.epoll_wait(self.fd, &self.ready_polls, 1024, -1));
         } else {
             // added timeout (whereas none in uSockets impl)
             const timeout: std.c.timespec = .{ .sec = 0, .nsec = if (self.polls_count > 2) 500000 else 5000000 };
@@ -66,7 +66,8 @@ pub fn run(self: *Self, allocator: std.mem.Allocator) !void {
         self.current_ready_poll = 0;
         while (self.current_ready_poll < self.ready_polls_count) : (self.current_ready_poll += 1) {
             if (self.getReadyPoll(self.current_ready_poll)) |p| {
-                // if (p.pollType() == .callback) std.debug.print("loop - poll_type: {s}\n", .{@tagName(p.pollType())});
+                // if (p.pollType() == .callback)
+                // std.debug.print("loop - poll_type: {s}\n", .{@tagName(p.pollType())});
 
                 var events: u32 = undefined;
                 var err: u32 = undefined;

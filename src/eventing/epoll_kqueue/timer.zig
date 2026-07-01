@@ -9,22 +9,16 @@ const Loop = @import("loop.zig");
 const Poll = @import("poll.zig");
 
 pub fn createTimer(allocator: std.mem.Allocator, loop: *Loop, fallthrough: bool, comptime MaybeT: ?type) !*Timer {
+    const cb = try InternalCallback.init(allocator, loop, MaybeT);
+    errdefer cb.deinit(allocator);
     if (build_opts.event_backend == .epoll) {
-        const cb = try InternalCallback.init(allocator, loop, MaybeT);
-        errdefer cb.deinit(allocator);
         try cb.p.create(allocator, loop, fallthrough, null);
-        const timer_fd = std.c.timerfd_create(std.c.CLOCK.REALTIME, std.c.TFD.NONBLOCK | std.c.TFD.CLOEXEC);
-        if (timer_fd == -1) {
-            return error.CreateTimerFdFailed;
-        }
-        cb.p.init(if (builtin.os.tag == .windows) @ptrFromInt(timer_fd) else @intCast(timer_fd), .callback);
+        const timer_fd = std.os.linux.timerfd_create(std.os.linux.TIMERFD_CLOCK.REALTIME, .{ .NONBLOCK = true, .CLOEXEC = true });
+        cb.p.init(@intCast(timer_fd), .callback);
         return cb;
     } else {
-        const cb = try InternalCallback.init(allocator, loop, MaybeT);
-        errdefer cb.deinit(allocator);
         cb.p.state.poll_type = .polling_in;
         cb.p.setType(.callback);
-
         if (!fallthrough) loop.polls_count += 1;
         return cb;
     }
@@ -35,11 +29,10 @@ pub fn timerSet(t: *Timer, cb: ?*const fn (std.mem.Allocator, *Timer) anyerror!v
     internal_cb.cb = @ptrCast(@alignCast(cb));
     if (build_opts.event_backend == .epoll) {
         const timer_spec: std.os.linux.itimerspec = .{
-            .it_interval = .{ .sec = repeat_ms / 1000, .nsec = (repeat_ms % 1000) * 1000000 },
-            .it_value = .{ .sec = ms / 1000, .nsec = (ms % 1000) * 1000000 },
+            .it_interval = .{ .sec = @divTrunc(repeat_ms, 1000), .nsec = @rem(repeat_ms, 1000) * 1000000 },
+            .it_value = .{ .sec = @divTrunc(ms, 1000), .nsec = @rem(ms, 1000) * 1000000 },
         };
-        // TODO: verify setting `flags` correctly (`0` is passed by `uSockets`, which should correspond to default values of `std.os.linux.TFD.TIMER`)
-        _ = std.os.linux.timerfd_settime(internal_cb.p.fd(), .{}, &timer_spec, null);
+        _ = std.os.linux.timerfd_settime(internal_cb.p.fd(), @bitCast(@as(u32, 0)), &timer_spec, null);
         internal_cb.p.start(internal_cb.loop, constants.socket_readable);
     } else {
         const event: std.posix.Kevent = .{

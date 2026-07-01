@@ -152,7 +152,7 @@ pub fn internalDispatchReadyPoll(allocator: std.mem.Allocator, p: *Poll, err: u3
             const cb: *InternalCallback = @fieldParentPtr("p", p);
             if (!cb.leave_poll_ready) {
                 if (build_opts.event_backend != .libuv) {
-                    _ = try p.acceptEvent();
+                    _ = p.acceptEvent();
                 }
             }
             // std.debug.print("poll_type: callback\n", .{});
@@ -163,6 +163,7 @@ pub fn internalDispatchReadyPoll(allocator: std.mem.Allocator, p: *Poll, err: u3
             // try cb.cb.?(allocator, cb);
         },
         .semi_socket => {
+            // std.debug.print("poll_type: semi_socket -- events: {d} -- socket_writable: {d}\n", .{ p.events(), socket_writable });
             if (p.events() == socket_writable) {
                 const s: *Socket = @fieldParentPtr("p", p);
                 if (err != 0) {

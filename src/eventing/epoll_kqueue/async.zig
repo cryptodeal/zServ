@@ -11,7 +11,7 @@ pub fn createAsync(allocator: std.mem.Allocator, loop: *Loop, fallthrough: bool,
         const cb = try InternalCallback.init(allocator, loop, MaybeT);
         errdefer cb.deinit(allocator);
         try cb.p.create(allocator, loop, fallthrough, null);
-        cb.p.init(@intCast(std.c.eventfd(0, std.os.linux.EFD.NONBLOCK | std.os.linux.EFD.CLOEXEC)), .callback);
+        cb.p.init(@intCast(std.os.linux.eventfd(0, std.os.linux.EFD.NONBLOCK | std.os.linux.EFD.CLOEXEC)), .callback);
         cb.expects_loop = true;
         return cb;
     } else {
@@ -33,9 +33,8 @@ pub fn asyncSet(a: *InternalCallback, cb: *const fn (std.mem.Allocator, *Interna
 pub fn asyncWakeup(a: *InternalCallback) void {
     if (build_opts.event_backend == .epoll) {
         const one: u64 = 1;
-        _ = std.c.write(a.p.fd(), std.mem.asBytes(&one).ptr, @sizeOf(u64));
+        _ = std.os.linux.write(a.p.fd(), std.mem.asBytes(&one).ptr, @sizeOf(u64));
     } else {
-        // TODO: `ident` and `udata` might need to be set to `&a.p` vs the callback directly
         const event: std.posix.Kevent = .{
             .ident = @intFromPtr(&a.p),
             .filter = std.c.EVFILT.USER,
@@ -51,7 +50,7 @@ pub fn asyncWakeup(a: *InternalCallback) void {
 pub fn asyncClose(allocator: std.mem.Allocator, a: *InternalCallback) void {
     if (build_opts.event_backend == .epoll) {
         a.p.stop(a.loop);
-        _ = std.c.close(a.p.fd());
+        _ = std.os.linux.close(a.p.fd());
     } else {
         const event: std.posix.Kevent = .{
             .ident = @intFromPtr(&a.p),

@@ -106,7 +106,7 @@ pub fn stop(self: *Self, _: *Loop) void {
     libuv.uv_close(@ptrCast(@alignCast(self.uv_p)), &closeCbFreePoll);
 }
 
-fn acceptEvent(_: *Self) !usize {
+fn acceptEvent(_: *Self) usize {
     return 0;
 }
 
