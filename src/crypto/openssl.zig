@@ -1,6 +1,6 @@
 const build_opts = @import("build_opts");
 const ssl = switch (build_opts.ssl_impl) {
-    .openssl => @import("openssl"),
+    .boringssl, .openssl => @import("openssl"),
     else => @compileError("Currently support only OpenSSL"),
 };
 const loop_ = @import("../loop.zig");
@@ -12,6 +12,7 @@ const ListenSocket = @import("../listen_socket.zig");
 const constants = @import("../internal/constants.zig");
 const Socket = @import("../socket.zig");
 const SocketContext = @import("../socket_context.zig");
+const SocketContextOptions = @import("../socket_context_options.zig");
 const sni_tree = @import("sni_tree.zig");
 
 pub const LoopSslData = struct {
@@ -70,7 +71,7 @@ pub const SslSocketContext = struct {
     // TODO: might be able to type this more accurately
     sni: ?*anyopaque = null,
 
-    pub fn init(allocator: std.mem.Allocator, loop: *Loop, options: SocketContext.Options, comptime MaybeT: ?type) !*SslSocketContext {
+    pub fn init(allocator: std.mem.Allocator, loop: *Loop, options: SocketContextOptions, comptime MaybeT: ?type) !*SslSocketContext {
         try initLoopSslData(allocator, loop);
         const ssl_context = try createSslCtxFromOptions(allocator, options);
         if (ssl_context == null) {
@@ -83,7 +84,11 @@ pub const SslSocketContext = struct {
         };
         try context.sc.internalInit(allocator, loop, options, MaybeT);
         context.sc.is_ssl = true;
-        _ = ssl.SSL_CTX_callback_ctrl(context.ssl_context, ssl.SSL_CTRL_SET_TLSEXT_SERVERNAME_CB, @as(*fn () callconv(.c) void, @ptrCast(@alignCast(@constCast(&sniCb)))));
+        if (build_opts.ssl_impl == .openssl) {
+            _ = ssl.SSL_CTX_callback_ctrl(context.ssl_context, ssl.SSL_CTRL_SET_TLSEXT_SERVERNAME_CB, @as(*fn () callconv(.c) void, @ptrCast(@alignCast(@constCast(&sniCb)))));
+        } else if (build_opts.ssl_impl == .boringssl) {
+            _ = ssl.SSL_CTX_set_tlsext_servername_callback(context.ssl_context, @ptrCast(@alignCast(&sniCb)));
+        }
         _ = ssl.SSL_CTX_set_tlsext_servername_arg(context.ssl_context, context);
         context.sni = try sni_tree.SniNode.init(allocator);
         return context;
@@ -123,7 +128,7 @@ pub const SslSocketContext = struct {
         return null;
     }
 
-    pub fn addServerName(self: *SslSocketContext, allocator: std.mem.Allocator, hostname_pattern: [:0]const u8, options: SocketContext.Options, user: ?*anyopaque) !void {
+    pub fn addServerName(self: *SslSocketContext, allocator: std.mem.Allocator, hostname_pattern: [:0]const u8, options: SocketContextOptions, user: ?*anyopaque) !void {
         const ssl_context = try createSslCtxFromOptions(allocator, options);
         if (ssl_context) |ctx| {
             if (1 != ssl.SSL_CTX_set_ex_data(ctx, 0, user)) {
@@ -491,7 +496,7 @@ pub fn freeSslCtx(allocator: std.mem.Allocator, ssl_context: ?*ssl.SSL_CTX) void
     }
 }
 
-pub fn createSslCtxFromOptions(allocator: std.mem.Allocator, options: SocketContext.Options) !?*ssl.SSL_CTX {
+pub fn createSslCtxFromOptions(allocator: std.mem.Allocator, options: SocketContextOptions) !?*ssl.SSL_CTX {
     const ssl_context = ssl.SSL_CTX_new(ssl.TLS_method());
     _ = ssl.SSL_CTX_set_read_ahead(ssl_context, 1);
     _ = ssl.SSL_CTX_set_mode(ssl_context, ssl.SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
@@ -577,7 +582,7 @@ pub fn createSslCtxFromOptions(allocator: std.mem.Allocator, options: SocketCont
     return ssl_context;
 }
 
-fn sniCb(ssl_: ?*ssl.SSL, _: c_int, arg: ?*anyopaque) callconv(.c) c_int {
+fn sniCb(ssl_: ?*ssl.SSL, _: ?*c_int, arg: ?*anyopaque) callconv(.c) c_int {
     if (ssl_ != null) {
         const hostname = ssl.SSL_get_servername(ssl_, ssl.TLSEXT_NAMETYPE_host_name);
         // TODO: need to check if null char is only value

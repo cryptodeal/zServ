@@ -5,4 +5,4 @@ src/io_uring
 src-out/
 zig-pkg/
 zig-out/
-hammer_test.sock/
+hammer_test.sock

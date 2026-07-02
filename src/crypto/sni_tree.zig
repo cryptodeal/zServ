@@ -2,7 +2,7 @@ const std = @import("std");
 
 const max_labels = 10;
 
-threadlocal var sni_free_cb: *const fn (?*anyopaque) void = undefined;
+threadlocal var sni_free_cb: *const fn (std.mem.Allocator, ?*anyopaque) void = undefined;
 
 pub const SniNode = struct {
     user: ?*anyopaque = null,
@@ -21,7 +21,7 @@ pub const SniNode = struct {
         while (child_iterator.next()) |entry| {
             allocator.free(entry.key_ptr.*);
             if (entry.value_ptr.*.user) |user| {
-                sni_free_cb(user);
+                sni_free_cb(allocator, user);
             }
             entry.value_ptr.*.deinit(allocator);
         }
@@ -61,7 +61,7 @@ pub fn getUser(root: *SniNode, label: u32, labels: []const []const u8) ?*anyopaq
     } else return null;
 }
 
-pub fn sniFree(allocator: std.mem.Allocator, sni: *SniNode, cb: *const fn (user: ?*anyopaque) void) void {
+pub fn sniFree(allocator: std.mem.Allocator, sni: *SniNode, cb: *const fn (std.mem.Allocator, ?*anyopaque) void) void {
     sni_free_cb = cb;
     sni.deinit(allocator);
 }
@@ -111,7 +111,7 @@ test "sni tree" {
     const allocator = std.testing.allocator;
     const sni = try SniNode.init(allocator);
     defer sniFree(allocator, sni, struct {
-        pub fn call(user: ?*anyopaque) void {
+        pub fn call(_: std.mem.Allocator, user: ?*anyopaque) void {
             std.log.info("freeing user: {d}\n", .{@intFromPtr(user)});
         }
     }.call);

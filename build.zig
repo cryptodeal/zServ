@@ -88,11 +88,24 @@ pub fn build(b: *std.Build) !void {
             mod.linkLibrary(libuv);
         },
         .gcd => mod.linkFramework("CoreFoundation", .{}),
-        // TODO: link asio, gcd
+        // TODO: link asio
         else => {},
     }
 
     switch (ssl_impl) {
+        .boringssl => if (@import("build.boringssl.zig").createBoringssl(b, target, optimize)) |boringssl| {
+            const translate_c = b.addTranslateC(.{
+                .root_source_file = b.path("src/crypto/openssl.h"),
+                .target = target,
+                .optimize = optimize,
+            });
+            translate_c.defineCMacro("USE_BORINGSSL", null);
+            translate_c.addIncludePath(boringssl.crypto.getEmittedIncludeTree());
+            translate_c.addIncludePath(boringssl.ssl.getEmittedIncludeTree());
+            mod.linkLibrary(boringssl.ssl);
+            mod.linkLibrary(boringssl.crypto);
+            mod.addImport("openssl", translate_c.createModule());
+        },
         .openssl => if (b.lazyDependency("openssl", .{ .target = target, .optimize = optimize })) |openssl_dep| {
             const translate_c = b.addTranslateC(.{
                 .root_source_file = b.path("src/crypto/openssl.h"),
@@ -108,9 +121,8 @@ pub fn build(b: *std.Build) !void {
             mod.linkLibrary(libcrypto);
             mod.addImport("openssl", translate_c.createModule());
         },
-        // TODO: support wolfssl, boringssl
+        // TODO: support wolfssl
         // .wolfssl =>
-        // .boringssl =>
         else => {},
     }
     mod.addOptions("build_opts", options);

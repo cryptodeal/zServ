@@ -44,6 +44,10 @@
             .url = "git+https://github.com/allyourcodebase/libuv?ref=master#b465d9ae435fadb4c30c3abf1fd3177dc0c8a5c5",
             .hash = "libuv-1.52.0-htqqv0xqAAAccfnkBz9DgFM9I9FSzP05_44lKS63OrZr",
         },
+        .boringssl = .{
+            .url = "git+https://github.com/google/boringssl?ref=main#3adc3d1aba162a578e2547f329fcce8659b8e89c",
+            .hash = "N-V-__8AAJPC0g0KEU0dz7Kq2qSZ-IRfZhgtn9MblCkh-5pa",
+        },
     },
     .paths = .{
         "build.zig",
