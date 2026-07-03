@@ -39,7 +39,7 @@ pub fn build(b: *std.Build) !void {
 
     // Use Quic for networking.
     const with_quic = b.option(bool, "WITH_QUIC", "builds with QUIC network implementation") orelse false;
-    options.addOption(bool, "WITH_QUIC", with_quic);
+    options.addOption(bool, "with_quic", with_quic);
 
     // TODO: implement SSL options
     const ssl_impl = SslType.fromBuildOptions(.{
@@ -71,6 +71,20 @@ pub fn build(b: *std.Build) !void {
         .link_libc = true,
     });
 
+    // if (with_quic) {
+    //     if (b.lazyDependency("lsquic", .{ .target = target, .optimize = optimize })) |lsquic_dep| {
+    //         const lib_lsquic = lsquic_dep.artifact("lsquic");
+    //         const translate_c = b.addTranslateC(.{
+    //             .root_source_file = b.path("src/quic.h"),
+    //             .target = target,
+    //             .optimize = optimize,
+    //         });
+    //         translate_c.addIncludePath(lib_lsquic.getEmittedIncludeTree());
+    //         mod.addImport("lsquic", translate_c.createModule());
+    //         mod.linkLibrary(lib_lsquic);
+    //     }
+    // }
+
     switch (event_backend) {
         .libuv => if (b.lazyDependency("libuv", .{ .target = target, .optimize = optimize })) |libuv_dep| {
             const libuv = libuv_dep.artifact("uv");
@@ -93,17 +107,19 @@ pub fn build(b: *std.Build) !void {
     }
 
     switch (ssl_impl) {
-        .boringssl => if (@import("build.boringssl.zig").createBoringssl(b, target, optimize)) |boringssl| {
+        .boringssl => if (b.lazyDependency("boringssl", .{ .target = target, .optimize = optimize })) |boringssl_dep| {
             const translate_c = b.addTranslateC(.{
                 .root_source_file = b.path("src/crypto/openssl.h"),
                 .target = target,
                 .optimize = optimize,
             });
             translate_c.defineCMacro("USE_BORINGSSL", null);
-            translate_c.addIncludePath(boringssl.crypto.getEmittedIncludeTree());
-            translate_c.addIncludePath(boringssl.ssl.getEmittedIncludeTree());
-            mod.linkLibrary(boringssl.ssl);
-            mod.linkLibrary(boringssl.crypto);
+            const libssl = boringssl_dep.artifact("ssl");
+            const libcrypto = boringssl_dep.artifact("crypto");
+            translate_c.addIncludePath(libssl.getEmittedIncludeTree());
+            translate_c.addIncludePath(libcrypto.getEmittedIncludeTree());
+            mod.linkLibrary(libssl);
+            mod.linkLibrary(libcrypto);
             mod.addImport("openssl", translate_c.createModule());
         },
         .openssl => if (b.lazyDependency("openssl", .{ .target = target, .optimize = optimize })) |openssl_dep| {

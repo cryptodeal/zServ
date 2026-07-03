@@ -45,8 +45,8 @@
             .hash = "libuv-1.52.0-htqqv0xqAAAccfnkBz9DgFM9I9FSzP05_44lKS63OrZr",
         },
         .boringssl = .{
-            .url = "git+https://github.com/google/boringssl?ref=main#3adc3d1aba162a578e2547f329fcce8659b8e89c",
-            .hash = "N-V-__8AAJPC0g0KEU0dz7Kq2qSZ-IRfZhgtn9MblCkh-5pa",
+            .url = "git+https://github.com/cryptodeal/boringssl.git#eb0e992088962d4821831867ffb5cb4cbe78a608",
+            .hash = "boringssl-0.20260616.0-i67LCwBaAAAlSIpk3GmBVZ9lfubOq4fZxoEKYOCimxMX",
         },
     },
     .paths = .{
