@@ -71,19 +71,19 @@ pub fn build(b: *std.Build) !void {
         .link_libc = true,
     });
 
-    // if (with_quic) {
-    //     if (b.lazyDependency("lsquic", .{ .target = target, .optimize = optimize })) |lsquic_dep| {
-    //         const lib_lsquic = lsquic_dep.artifact("lsquic");
-    //         const translate_c = b.addTranslateC(.{
-    //             .root_source_file = b.path("src/quic.h"),
-    //             .target = target,
-    //             .optimize = optimize,
-    //         });
-    //         translate_c.addIncludePath(lib_lsquic.getEmittedIncludeTree());
-    //         mod.addImport("lsquic", translate_c.createModule());
-    //         mod.linkLibrary(lib_lsquic);
-    //     }
-    // }
+    if (with_quic) {
+        if (b.lazyDependency("lsquic", .{ .target = target, .optimize = optimize })) |lsquic_dep| {
+            const lib_lsquic = lsquic_dep.artifact("lsquic");
+            const translate_c = b.addTranslateC(.{
+                .root_source_file = b.path("src/quic.h"),
+                .target = target,
+                .optimize = optimize,
+            });
+            translate_c.addIncludePath(lib_lsquic.getEmittedIncludeTree());
+            mod.addImport("lsquic", translate_c.createModule());
+            mod.linkLibrary(lib_lsquic);
+        }
+    }
 
     switch (event_backend) {
         .libuv => if (b.lazyDependency("libuv", .{ .target = target, .optimize = optimize })) |libuv_dep| {
