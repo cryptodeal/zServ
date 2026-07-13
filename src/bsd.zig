@@ -1,16 +1,10 @@
 const builtin = @import("builtin");
+const c = @import("internal/c.zig");
 const std = @import("std");
 const sys = @import("sys.zig");
 
 pub const udp_max_size = (64 * 1024);
 pub const udp_max_num = 1024;
-
-pub const Addr = struct {
-    mem: std.posix.sockaddr.storage,
-    len: std.posix.socklen_t,
-    ip: []u8,
-    port: u32,
-};
 
 pub const AddrT = extern struct {
     mem: std.posix.sockaddr.storage,
@@ -29,7 +23,9 @@ pub const UdpPacketBuffer = switch (builtin.os.tag) {
     .visionos,
     .watchos,
     .windows,
-    => struct {
+    => extern struct {
+        const Self = @This();
+
         buf: [udp_max_num][*]u8,
         // length tracked separately as we allocate udp_max_size for each buf, but only use a specific length at any given time
         len: [udp_max_num]usize,
@@ -37,20 +33,68 @@ pub const UdpPacketBuffer = switch (builtin.os.tag) {
 
         pub fn init(allocator: std.mem.Allocator) !*UdpPacketBuffer {
             var packet_buffer = try allocator.create(UdpPacketBuffer);
-            inline for (0..udp_max_num) |i| {
+            packet_buffer.* = undefined;
+            for (0..udp_max_num) |i| {
                 packet_buffer.buf[i] = (try allocator.alloc(u8, udp_max_size)).ptr;
             }
             return packet_buffer;
         }
 
         pub fn deinit(self: *UdpPacketBuffer, allocator: std.mem.Allocator) void {
-            inline for (0..udp_max_num) |i| {
-                allocator.free(self.buf[i][0..udp_max_size]);
+            for (0..udp_max_num) |i| {
+                allocator.free(@as([]u8, self.buf[i][0..udp_max_size]));
             }
             allocator.destroy(self);
         }
+
+        pub fn ecn(_: *Self, _: usize) u8 {
+            std.debug.print("ECN not supported!\n", .{});
+            return 0;
+        }
+
+        pub fn payload(self: *Self, index: usize) []u8 {
+            return self.buf[index][0..self.len[index]];
+        }
+
+        pub fn peer(self: *Self, index: usize) [*]u8 {
+            return @ptrCast(@alignCast(&self.addr[index]));
+        }
+
+        pub fn localIp(_: *Self, _: usize, _: []u8) []u8 {
+            return &.{};
+        }
+
+        pub fn setPayload(self: *Self, index: usize, _: usize, payload_: []u8, peer_addr: ?*anyopaque) void {
+            @memcpy(self.buf[index], payload_);
+            @memcpy(std.mem.asBytes(&self.addr[index]), @as([*]u8, @ptrCast(@alignCast(peer_addr)))[0..@sizeOf(std.posix.sockaddr.storage)]);
+            self.len[index] = payload_.len;
+        }
+
+        pub fn sendmmsg(self: *Self, fd: std.posix.fd_t, _: usize, flags: u32) !usize {
+            for (0..udp_max_num) |i| {
+                const ret = std.c.sendto(fd, self.buf[i], self.len[i], flags, @ptrCast(@alignCast(&self.addr[i])), @sizeOf(std.posix.sockaddr.in));
+                if (ret == -1) {
+                    return i;
+                }
+            }
+            return udp_max_num;
+        }
+
+        pub fn recvmmsg(self: *Self, fd: std.posix.fd_t, _: u32, flags: u32, _: ?*anyopaque) usize {
+            for (0..udp_max_num) |i| {
+                var addr_len: u32 = @sizeOf(std.c.sockaddr.storage);
+                const ret = std.c.recvfrom(fd, self.buf[i], udp_max_size, flags, @as(?*std.c.sockaddr, @ptrCast(@alignCast(&self.addr[i]))), &addr_len);
+                if (ret == -1) {
+                    return i;
+                }
+                self.len[i] = @intCast(ret);
+            }
+            return udp_max_num;
+        }
     },
     else => struct {
+        const Self = @This();
+
         msgvec: [udp_max_num]std.c.mmsghdr,
         iov: [udp_max_num]std.c.iovec,
         addr: [udp_max_num]std.c.sockaddr.storage,
@@ -58,26 +102,100 @@ pub const UdpPacketBuffer = switch (builtin.os.tag) {
 
         pub fn init(allocator: std.mem.Allocator) !*UdpPacketBuffer {
             var packet_buffer = try allocator.create(UdpPacketBuffer);
-            inline for (0..udp_max_num) |i| {
+            packet_buffer.* = undefined;
+            for (0..udp_max_num) |i| {
                 packet_buffer.iov[i].base = (try allocator.alloc(u8, udp_max_size)).ptr;
                 packet_buffer.iov[i].len = udp_max_size;
                 packet_buffer.msgvec[i].hdr = .{
-                    .name = &packet_buffer.addr[i],
+                    .name = @ptrCast(@alignCast(&packet_buffer.addr[i])),
                     .namelen = @sizeOf(std.c.sockaddr.storage),
-                    .iov = &packet_buffer.iov[i],
+                    .iov = @ptrCast(@alignCast(&packet_buffer.iov[i])),
                     .iovlen = 1,
                     .control = &packet_buffer.control[i],
                     .controllen = 256,
+                    .flags = undefined,
                 };
             }
             return packet_buffer;
         }
 
         pub fn deinit(self: *UdpPacketBuffer, allocator: std.mem.Allocator) void {
-            inline for (0..udp_max_num) |i| {
-                allocator.free(self.iov[i].base[0..udp_max_size]);
+            for (0..udp_max_num) |i| {
+                allocator.free(@as([]u8, self.iov[i].base[0..udp_max_size]));
             }
             allocator.destroy(self);
+        }
+
+        pub fn ecn(self: *Self, index: usize) u8 {
+            const mh = &@as([*]std.c.mmsghdr, &self.msgvec)[index].hdr;
+            var maybe_cmsg = cmsg.firsthdr(mh);
+            while (maybe_cmsg) |c_| : (maybe_cmsg = cmsg.nexthdr(mh, c_)) {
+                if (c_.level == std.posix.IPPROTO.IP and c_.type == c.IP.TOS) {
+                    const tos: u8 = cmsg.data(c_)[0];
+                    return tos & 3;
+                }
+                if (c_.level == std.posix.IPPROTO.IPV6 and c_.type == c.IPV6.TCLASS) {
+                    const tos: u8 = cmsg.data(c_)[0];
+                    return tos & 3;
+                }
+            }
+            std.debug.print("We got no ECN!\n", .{});
+            return 0;
+        }
+
+        pub fn payload(self: *Self, index: usize) []u8 {
+            return @as([*]std.c.mmsghdr, &self.msgvec)[index].hdr.iov[0].base[0..@as([*]std.c.mmsghdr, &self.msgvec)[index].len];
+        }
+
+        pub fn peer(self: *Self, index: usize) [*]u8 {
+            return @ptrCast(@alignCast(@as([*]std.c.mmsghdr, &self.msgvec)[index].hdr.name));
+        }
+
+        pub fn localIp(self: *Self, index: usize, buf: []u8) []u8 {
+            const mh: *std.c.msghdr = &@as([*]std.c.mmsghdr, &self.msgvec)[index].hdr;
+            var maybe_cmsghdr = cmsg.firsthdr(mh);
+            while (maybe_cmsghdr) |cmsghdr| {
+                if (cmsghdr.level == std.c.IPPROTO.IP and cmsghdr.type == c.IP.PKTINFO) {
+                    std.debug.assert(buf.len >= 4);
+                    const pi: *std.c.in_pktinfo = @ptrCast(@alignCast(cmsg.data(cmsghdr)));
+                    @memcpy(buf[0..4], std.mem.asBytes(&pi.addr)[0..4]);
+                    return buf[0..4];
+                }
+                if (cmsghdr.level == std.c.IPPROTO.IP and @hasDecl(c.IP, "RECVDSTADDR") and cmsghdr.type == c.IP.RECVDSTADDR) {
+                    std.debug.assert(buf.len >= 4);
+                    const addr: [*]u8 = @ptrCast(@alignCast(cmsg.data(cmsghdr)));
+                    @memcpy(buf[0..4], addr[0..4]);
+                    return buf[0..4];
+                }
+                if (cmsghdr.level == std.c.IPPROTO.IPV6 and cmsghdr.type == c.IPV6.PKTINFO) {
+                    std.debug.assert(buf.len >= 16);
+                    const pi6: *std.c.in6_pktinfo = @ptrCast(@alignCast(cmsg.data(cmsghdr)));
+                    @memcpy(buf[0..16], pi6.addr[0..16]);
+                    return buf[0..16];
+                }
+                maybe_cmsghdr = cmsg.nexthdr(mh, cmsghdr);
+            }
+            return &.{};
+        }
+
+        pub fn setPayload(self: *Self, index: usize, offset: usize, payload_: []u8, peer_addr: ?*anyopaque) void {
+            const send_buf: [*]std.c.mmsghdr = &self.msgvec;
+            @memcpy(std.mem.asBytes(send_buf[index].hdr.name.?), @as([*]u8, @ptrCast(@alignCast(peer_addr)))[0..@sizeOf(std.c.sockaddr.in)]);
+            send_buf[index].hdr.controllen = 0;
+            send_buf[index].hdr.iov[0].len = payload_.len + offset;
+            @memcpy(send_buf[index].hdr.iov[0].base + offset, payload_);
+        }
+
+        pub fn sendmmsg(self: *Self, fd: std.posix.fd_t, vlen: u32, flags: u32) !usize {
+            const msgvec: [*]std.c.mmsghdr = &self.msgvec;
+            return std.os.linux.sendmmsg(fd, msgvec, vlen, flags | std.c.MSG.NOSIGNAL);
+        }
+
+        pub fn recvmmsg(self: *Self, fd: std.posix.fd_t, vlen: u32, flags: u32, _: ?*anyopaque) usize {
+            for (0..vlen) |i| {
+                @as([*]std.c.mmsghdr, &self.msgvec)[i].hdr.controllen = 256;
+            }
+            return std.os.linux.recvmmsg(fd, @as([*]std.c.mmsghdr, &self.msgvec), vlen, @intCast(flags), null);
         }
     },
 };
@@ -92,11 +210,8 @@ pub fn sendmmsg(
         .tvos,
         .visionos,
         .watchos,
-        => [*]struct {
-            msghdr: std.c.msghdr_const,
-            len: u32,
-        },
-        .windows => *UdpPacketBuffer,
+        .windows,
+        => *UdpPacketBuffer,
         else => [*]std.c.mmsghdr,
     },
     vlen: u32,
@@ -110,48 +225,23 @@ pub fn sendmmsg(
         .tvos,
         .visionos,
         .watchos,
+        .windows,
         => {
-            for (0..vlen) |i| {
-                const ret = std.c.sendmsg(fd, &msgvec[i].msghdr, flags);
-                if (ret == -1) {
-                    if (i != 0) {
-                        return i;
-                    } else {
-                        return error.SendMmsg;
-                    }
-                } else {
-                    msgvec[i].len = @intCast(ret);
-                }
-            }
-            return vlen;
-        },
-        .windows => {
             for (0..udp_max_num) |i| {
-                const ret = std.c.sendto(fd, msgvec.buf[i], msgvec.len[i], flags, msgvec.addr[i], @sizeOf(std.posix.sockaddr.in));
+                const ret = std.c.sendto(fd, msgvec.buf[i], msgvec.len[i], flags, @ptrCast(@alignCast(&msgvec.addr[i])), @sizeOf(std.posix.sockaddr.in));
                 if (ret == -1) {
                     return i;
                 }
             }
             return udp_max_num;
         },
-        else => return std.c.sendmmsg(fd, msgvec, vlen, flags | std.c.MSG.NOSIGNAL),
+        else => return std.os.linux.sendmmsg(fd, msgvec, vlen, flags | std.c.MSG.NOSIGNAL),
     }
 }
 
 pub fn recvmmsg(
     fd: std.posix.fd_t,
-    msgvec: switch (builtin.os.tag) {
-        .driverkit,
-        .ios,
-        .maccatalyst,
-        .macos,
-        .tvos,
-        .visionos,
-        .watchos,
-        .windows,
-        => *UdpPacketBuffer,
-        else => [*]std.c.mmsghdr,
-    },
+    msgvec: *UdpPacketBuffer,
     vlen: u32,
     flags: i32,
     _: ?*anyopaque,
@@ -178,9 +268,9 @@ pub fn recvmmsg(
         },
         else => {
             for (0..vlen) |i| {
-                msgvec[i].hdr.controllen = 256;
+                @as([*]std.c.mmsghdr, &msgvec.msgvec)[i].hdr.controllen = 256;
             }
-            return std.c.recvmmsg(fd, msgvec, vlen, flags, null);
+            return std.os.linux.recvmmsg(fd, @as([*]std.c.mmsghdr, &msgvec.msgvec), vlen, @intCast(flags), null);
         },
     }
 }
@@ -215,8 +305,7 @@ const cmsg = struct {
         if ((@intFromPtr(msg_control_ptr) + mhdr.controllen - @intFromPtr(cmsg_ptr) < size_needed) or (@intFromPtr(msg_control_ptr) + mhdr.controllen - @intFromPtr(cmsg_ptr) - size_needed < cmsghdr.len))
             return null;
 
-        cmsghdr = @ptrCast(@as([*]u8, @ptrCast(@alignCast(cmsghdr))) + @"align"(cmsghdr.len));
-        return cmsghdr;
+        return @ptrCast(@alignCast(@as([*]u8, @ptrCast(@alignCast(cmsghdr))) + @"align"(cmsghdr.len)));
     }
 };
 
@@ -230,7 +319,7 @@ pub fn udpPacketBufferLocalIp(
         .visionos,
         .watchos,
         .windows,
-        => ?anyopaque,
+        => ?*anyopaque,
         else => [*]std.c.mmsghdr,
     },
     index: usize,
@@ -250,17 +339,17 @@ pub fn udpPacketBufferLocalIp(
             const mh: *std.c.msghdr = &msgvec[index].hdr;
             var maybe_cmsghdr = cmsg.firsthdr(mh);
             while (maybe_cmsghdr) |cmsghdr| {
-                if (cmsghdr.level == std.c.IPPROTO.IP and cmsghdr.type == std.c.IP.PKTINFO) {
+                if (cmsghdr.level == std.c.IPPROTO.IP and cmsghdr.type == c.IP.PKTINFO) {
                     const pi: *std.c.in_pktinfo = @ptrCast(@alignCast(cmsg.data(cmsghdr)));
                     @memcpy(ip[0..4], std.mem.asBytes(&pi.addr)[0..4]);
                     return 4;
                 }
-                if (cmsghdr.level == std.c.IPPROTO.IP and cmsghdr.type == std.c.freebsd.IP.RECVDSTADDR) {
+                if (cmsghdr.level == std.c.IPPROTO.IP and cmsghdr.type == c.IP.RECVDSTADDR) {
                     const addr: [*]u8 = @ptrCast(@alignCast(cmsg.data(cmsghdr)));
                     @memcpy(ip[0..4], addr[0..4]);
                     return 4;
                 }
-                if (cmsghdr.level == std.c.IPPROTO.IPV6 and cmsghdr.type == std.c.IPV6.PKTINFO) {
+                if (cmsghdr.level == std.c.IPPROTO.IPV6 and cmsghdr.type == c.IPV6.PKTINFO) {
                     const pi6: *std.c.in6_pktinfo = @ptrCast(@alignCast(cmsg.data(cmsghdr)));
                     @memcpy(ip[0..16], pi6.addr[0..16]);
                     return 16;
@@ -377,17 +466,6 @@ pub fn appleNoSigpipe(fd: std.posix.socket_t) std.posix.socket_t {
         const val: c_int = 1;
         _ = std.c.setsockopt(fd, std.c.SOL.SOCKET, std.c.SO.NOSIGPIPE, &val, @sizeOf(c_int));
     }
-    // switch (builtin.os.tag) {
-    //     .driverkit,
-    //     .ios,
-    //     .maccatalyst,
-    //     .macos,
-    //     .tvos,
-    //     .visionos,
-    //     .watchos,
-    //     => try sys.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.NOSIGPIPE, &[_]u8{1}),
-    //     else => {},
-    // }
     return fd;
 }
 
@@ -486,10 +564,7 @@ fn internalFinalizeBsdAddr(addr: *AddrT) void {
 
 pub fn localAddr(fd: std.posix.socket_t, addr: *AddrT) !void {
     addr.len = @sizeOf(std.posix.sockaddr.storage);
-    switch (builtin.os.tag) {
-        .linux => if (std.os.linux.getsockname(fd, @ptrCast(@alignCast(&addr.mem)), addr.len != 0)) return error.LinuxLocalAddr,
-        else => if (std.c.getsockname(fd, @ptrCast(@alignCast(&addr.mem)), addr.len) != 0) return error.LocalAddr,
-    }
+    if (std.c.getsockname(fd, @ptrCast(@alignCast(&addr.mem)), &addr.len) != 0) return error.LocalAddr;
     internalFinalizeBsdAddr(addr);
 }
 
@@ -625,8 +700,8 @@ pub fn createListenSocket(host: ?[:0]const u8, port: u32, options: u32) !std.pos
         }
     }
 
-    if (!(@typeInfo(std.c.IPV6) == .void) and @hasDecl(std.c.IPV6, "V6ONLY")) {
-        _ = std.c.setsockopt(listen_fd.?, std.c.IPPROTO.IPV6, std.c.IPV6.V6ONLY, &[_]u8{0}, 1);
+    if (!(@typeInfo(c.IPV6) == .void) and @hasDecl(c.IPV6, "V6ONLY")) {
+        _ = std.c.setsockopt(listen_fd.?, std.c.IPPROTO.IPV6, c.IPV6.V6ONLY, &[_]u8{0}, 1);
     }
     if (std.c.bind(listen_fd.?, listen_addr.addr, listen_addr.addrlen) != 0 or std.c.listen(listen_fd.?, 512) != 0) {
         closeSocket(listen_fd.?);
@@ -666,11 +741,11 @@ pub fn createUdpSocket(host: [:0]const u8, port: u32) !std.posix.socket_t {
         .family = std.posix.AF.UNSPEC,
         .socktype = std.posix.SOCK.DGRAM,
     });
-    var result: *std.posix.addrinfo = undefined;
+    var result: ?*std.posix.addrinfo = null;
 
     var port_str_buf: [16]u8 = undefined;
     const port_str: [:0]u8 = try std.fmt.bufPrintSentinel(&port_str_buf, "{d}", .{port}, 0);
-    if (std.c.getaddrinfo(host.ptr, port_str.ptr, &hints, &result)) {
+    if (@intFromEnum(std.c.getaddrinfo(host.ptr, port_str.ptr, &hints, &result)) != 0) {
         return error.CreateUdpSocket;
     }
 
@@ -680,9 +755,9 @@ pub fn createUdpSocket(host: [:0]const u8, port: u32) !std.posix.socket_t {
     while (maybe_a) |a| : (maybe_a = a.next) {
         if (listen_fd != null) break;
         if (a.family == std.posix.AF.INET6) {
-            if (createSocket(a.family, a.socktype, a.protocol)) |created_fd| {
+            if (createSocket(@intCast(a.family), @intCast(a.socktype), @intCast(a.protocol))) |created_fd| {
                 listen_fd = created_fd;
-            }
+            } else |_| {}
             listen_addr = a;
         }
     }
@@ -691,47 +766,50 @@ pub fn createUdpSocket(host: [:0]const u8, port: u32) !std.posix.socket_t {
     while (maybe_a) |a| : (maybe_a = a.next) {
         if (listen_fd != null) break;
         if (a.family == std.posix.AF.INET) {
-            if (createSocket(a.family, a.socktype, a.protocol)) |created_fd| {
+            if (createSocket(@intCast(a.family), @intCast(a.socktype), @intCast(a.protocol))) |created_fd| {
                 listen_fd = created_fd;
-            }
+            } else |_| {}
             listen_addr = a;
         }
     }
 
     if (listen_fd == null) {
-        std.c.freeaddrinfo(result);
+        std.c.freeaddrinfo(result.?);
         return error.CreateUdpSocket;
     }
 
     if (port != 0) {
-        _ = std.c.setsockopt(listen_fd.?, std.c.SOL.SOCKET, std.c.SO.REUSEADDR, &[_]u8{1});
+        _ = std.c.setsockopt(listen_fd.?, std.c.SOL.SOCKET, std.c.SO.REUSEADDR, &[_]u8{1}, 1);
     }
 
-    if (@hasDecl(std.posix.IPV6, "V6ONLY")) {
-        _ = std.c.setsockopt(listen_fd.?, std.c.IPPROTO.IPV6, std.c.IPV6.V6ONLY, &[_]u8{0});
+    if (!(@typeInfo(c.IPV6) == .void) and @hasDecl(c.IPV6, "V6ONLY")) {
+        _ = std.c.setsockopt(listen_fd.?, std.c.IPPROTO.IPV6, c.IPV6.V6ONLY, &[_]u8{0}, 1);
     }
 
-    const ipv6_recvpktinfo = if (!@hasDecl(std.posix.IPV6, "RECVPKTINFO")) std.posix.IPV6.PKTINFO else std.posix.IPV6.RECVPKTINFO;
     const enabled: []const u8 = &[_]u8{1};
-    if (std.c.setsockopt(listen_fd.?, std.posix.IPPROTO.IPV6, ipv6_recvpktinfo, enabled.ptr, 1) == -1) {
-        if (std.c._errno() == 92) {
-            if (@hasDecl(std.posix.IP, "PKTINFO")) {
-                if (std.c.setsockopt(listen_fd.?, std.posix.IPPROTO.IP, std.posix.IP.PKTINFO, enabled.ptr, 1) != 0) {
-                    std.debug.print("Error setting IPv4 pktinfo!\n", .{});
+
+    if (!(@typeInfo(c.IPV6) == .void)) {
+        const ipv6_recvpktinfo = if (!@hasDecl(c.IPV6, "RECVPKTINFO")) c.IPV6.PKTINFO else c.IPV6.RECVPKTINFO;
+        if (std.c.setsockopt(listen_fd.?, std.posix.IPPROTO.IPV6, ipv6_recvpktinfo, enabled.ptr, 1) == -1) {
+            if (std.c._errno().* == 92) {
+                if (@hasDecl(c.IP, "PKTINFO")) {
+                    if (std.c.setsockopt(listen_fd.?, std.posix.IPPROTO.IP, c.IP.PKTINFO, enabled.ptr, 1) != 0) {
+                        std.debug.print("Error setting IPv4 pktinfo!\n", .{});
+                    }
+                } else if (@hasDecl(c.IP, "RECVDSTADDR")) {
+                    if (std.c.setsockopt(listen_fd.?, std.posix.IPPROTO.IP, c.IP.RECVDSTADDR, enabled.ptr, 1) != 0) {
+                        std.debug.print("Error setting IPv4 pktinfo!\n", .{});
+                    }
                 }
-            } else if (@hasDecl(std.posix.IP, "RECVDSTADDR")) {
-                if (std.c.setsockopt(listen_fd.?, std.posix.IPPROTO.IP, std.posix.IP.RECVDSTADDR, enabled.ptr, 1) != 0) {
-                    std.debug.print("Error setting IPv4 pktinfo!\n", .{});
-                }
+            } else {
+                std.debug.print("Error setting IPv6 pktinfo!\n", .{});
             }
-        } else {
-            std.debug.print("Error setting IPv6 pktinfo!\n", .{});
         }
     }
 
-    if (std.c.setsockopt(listen_fd.?, std.posix.IPPROTO.IPV6, std.posix.IPV6.RECVTCLASS, enabled.ptr, 1) == -1) {
-        if (std.c._errno() == 92) {
-            if (std.c.setsockopt(listen_fd.?, std.posix.IPPROTO.IP, std.posix.IP.RECVTOS, enabled.ptr, 1) != 0) {
+    if (std.c.setsockopt(listen_fd.?, std.posix.IPPROTO.IPV6, c.IPV6.RECVTCLASS, enabled.ptr, 1) == -1) {
+        if (std.c._errno().* == 92) {
+            if (std.c.setsockopt(listen_fd.?, std.posix.IPPROTO.IP, c.IP.RECVTOS, enabled.ptr, 1) != 0) {
                 std.debug.print("Error setting IPv4 ECN!\n", .{});
             }
         } else {
@@ -741,41 +819,30 @@ pub fn createUdpSocket(host: [:0]const u8, port: u32) !std.posix.socket_t {
 
     if (std.c.bind(listen_fd.?, listen_addr.addr, listen_addr.addrlen) != 0) {
         closeSocket(listen_fd.?);
-        std.c.freeaddrinfo(result);
+        std.c.freeaddrinfo(result.?);
         return error.CreateUdpSocket;
     }
-    std.c.freeaddrinfo(result);
+    std.c.freeaddrinfo(result.?);
     return listen_fd.?;
 }
 
 pub fn udpPacketBufferEcn(msgvec: ?*anyopaque, index: usize) u8 {
-    switch (builtin.os.tag) {
-        // TODO: verify this is exhaustive list of OS that DO NOT support ECN
-        .driverkit,
-        .ios,
-        .maccatalyst,
-        .macos,
-        .tvos,
-        .visionos,
-        .watchos,
-        .windows,
-        => std.debug.print("ECN not supported!\n", .{}),
-        else => {
-            const mh = &@as([*]std.c.mmsghdr, @ptrCast(@alignCast(msgvec)))[index].hdr;
-            var maybe_cmsg = cmsg.firsthdr(mh);
-            while (maybe_cmsg) |c| : (maybe_cmsg = cmsg.nexthdr(mh, c)) {
-                if (c.level == std.posix.IPPROTO.IP and c.type == std.posix.IP.TOS) {
-                    const tos: u8 = cmsg.data(c).*;
-                    return tos & 3;
-                }
-                if (c.level == std.posix.IPPROTO.IPV6 and c.type == std.posix.IPV6.TCLASS) {
-                    const tos: u8 = cmsg.data(c).*;
-                    return tos & 3;
-                }
+    if (builtin.os.tag.isDarwin() or builtin.os.tag == .windows) {
+        std.debug.print("ECN not supported!\n", .{});
+    } else {
+        const mh = &@as([*]std.c.mmsghdr, @ptrCast(@alignCast(msgvec)))[index].hdr;
+        var maybe_cmsg = cmsg.firsthdr(mh);
+        while (maybe_cmsg) |c_| : (maybe_cmsg = cmsg.nexthdr(mh, c_)) {
+            if (c_.level == std.posix.IPPROTO.IP and c_.type == c.IP.TOS) {
+                const tos: u8 = cmsg.data(c_).*;
+                return tos & 3;
             }
-        },
+            if (c_.level == std.posix.IPPROTO.IPV6 and c_.type == c.IPV6.TCLASS) {
+                const tos: u8 = cmsg.data(c_).*;
+                return tos & 3;
+            }
+        }
     }
-
     std.debug.print("We got no ECN!\n", .{});
     return 0;
 }
@@ -784,6 +851,9 @@ pub fn createConnectSocket(host: [:0]const u8, port: u32, source_host: ?[:0]cons
     var hints: std.posix.addrinfo = std.mem.zeroInit(std.posix.addrinfo, .{
         .family = std.posix.AF.UNSPEC,
         .socktype = std.posix.SOCK.STREAM,
+        .flags = .{
+            .ADDRCONFIG = true,
+        },
     });
     var result: ?*std.posix.addrinfo = null;
 
