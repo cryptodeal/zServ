@@ -1,7 +1,6 @@
 const builtin = @import("builtin");
 const c = @import("internal/c.zig");
 const std = @import("std");
-const sys = @import("sys.zig");
 
 pub const udp_max_size = (64 * 1024);
 pub const udp_max_num = 1024;
@@ -478,13 +477,15 @@ pub fn setNonBlocking(fd: std.posix.socket_t) std.posix.socket_t {
 }
 
 pub fn socketNoDelay(fd: std.posix.socket_t, enabled: bool) void {
-    _ = std.c.setsockopt(fd, std.c.IPPROTO.TCP, std.c.TCP.NODELAY, &[1]u8{@intCast(@intFromBool(enabled))}, 1);
+    const enabled_int: c_int = @intCast(@intFromBool(enabled));
+    _ = std.c.setsockopt(fd, std.c.IPPROTO.TCP, std.c.TCP.NODELAY, &enabled_int, @sizeOf(c_int));
 }
 
 pub fn socketFlush(fd: std.posix.socket_t) void {
     // TODO: should only handle if TCP_CORK is defined/supported (might be able to simply catch error)
     if (@hasDecl(std.c.TCP, "CORK")) {
-        _ = std.c.setsockopt(fd, std.c.IPPROTO.TCP, std.c.TCP.CORK, &[1]u8{0}, 1);
+        const enabled: c_int = 0;
+        _ = std.c.setsockopt(fd, std.c.IPPROTO.TCP, std.c.TCP.CORK, &enabled, @sizeOf(c_int));
     }
 }
 
@@ -681,27 +682,29 @@ pub fn createListenSocket(host: ?[:0]const u8, port: u32, options: u32) !std.pos
         std.c.freeaddrinfo(result.?);
         return error.CreateListenSocket;
     }
+    const enabled: c_int = 1;
+    const disabled: c_int = 0;
 
     if (port != 0) {
         if (builtin.os.tag == .windows) {
             if ((options & 1) != 0) {
                 // hacky workaround for missing `std.c.SO.EXCLUSIVEADDRUSE`
-                _ = std.c.setsockopt(listen_fd.?, std.c.SOL.SOCKET, ~std.c.SO.REUSEADDR, &[_]u8{1}, 1);
+                _ = std.c.setsockopt(listen_fd.?, std.c.SOL.SOCKET, ~std.c.SO.REUSEADDR, &enabled, @sizeOf(c_int));
             } else {
-                _ = std.c.setsockopt(listen_fd.?, std.c.SOL.SOCKET, ~std.c.SO.REUSEADDR, &[_]u8{1}, 1);
+                _ = std.c.setsockopt(listen_fd.?, std.c.SOL.SOCKET, ~std.c.SO.REUSEADDR, &enabled, @sizeOf(c_int));
             }
         } else {
             if (@hasDecl(std.c.SO, "REUSEPORT")) {
                 if ((options & 1) == 0) {
-                    _ = std.c.setsockopt(listen_fd.?, std.c.SOL.SOCKET, std.c.SO.REUSEPORT, &[_]u8{1}, 1);
+                    _ = std.c.setsockopt(listen_fd.?, std.c.SOL.SOCKET, std.c.SO.REUSEPORT, &enabled, @sizeOf(c_int));
                 }
             }
-            _ = std.c.setsockopt(listen_fd.?, std.c.SOL.SOCKET, std.c.SO.REUSEADDR, &[_]u8{1}, 1);
+            _ = std.c.setsockopt(listen_fd.?, std.c.SOL.SOCKET, std.c.SO.REUSEADDR, &enabled, @sizeOf(c_int));
         }
     }
 
     if (!(@typeInfo(c.IPV6) == .void) and @hasDecl(c.IPV6, "V6ONLY")) {
-        _ = std.c.setsockopt(listen_fd.?, std.c.IPPROTO.IPV6, c.IPV6.V6ONLY, &[_]u8{0}, 1);
+        _ = std.c.setsockopt(listen_fd.?, std.c.IPPROTO.IPV6, c.IPV6.V6ONLY, &disabled, @sizeOf(c_int));
     }
     if (std.c.bind(listen_fd.?, listen_addr.addr, listen_addr.addrlen) != 0 or std.c.listen(listen_fd.?, 512) != 0) {
         closeSocket(listen_fd.?);
@@ -778,26 +781,27 @@ pub fn createUdpSocket(host: [:0]const u8, port: u32) !std.posix.socket_t {
         return error.CreateUdpSocket;
     }
 
+    const enabled: c_int = 1;
+    const disabled: c_int = 0;
+
     if (port != 0) {
-        _ = std.c.setsockopt(listen_fd.?, std.c.SOL.SOCKET, std.c.SO.REUSEADDR, &[_]u8{1}, 1);
+        _ = std.c.setsockopt(listen_fd.?, std.c.SOL.SOCKET, std.c.SO.REUSEADDR, &enabled, @sizeOf(c_int));
     }
 
     if (!(@typeInfo(c.IPV6) == .void) and @hasDecl(c.IPV6, "V6ONLY")) {
-        _ = std.c.setsockopt(listen_fd.?, std.c.IPPROTO.IPV6, c.IPV6.V6ONLY, &[_]u8{0}, 1);
+        _ = std.c.setsockopt(listen_fd.?, std.c.IPPROTO.IPV6, c.IPV6.V6ONLY, &disabled, @sizeOf(c_int));
     }
-
-    const enabled: []const u8 = &[_]u8{1};
 
     if (!(@typeInfo(c.IPV6) == .void)) {
         const ipv6_recvpktinfo = if (!@hasDecl(c.IPV6, "RECVPKTINFO")) c.IPV6.PKTINFO else c.IPV6.RECVPKTINFO;
-        if (std.c.setsockopt(listen_fd.?, std.posix.IPPROTO.IPV6, ipv6_recvpktinfo, enabled.ptr, 1) == -1) {
+        if (std.c.setsockopt(listen_fd.?, std.posix.IPPROTO.IPV6, ipv6_recvpktinfo, &enabled, @sizeOf(c_int)) == -1) {
             if (std.c._errno().* == 92) {
                 if (@hasDecl(c.IP, "PKTINFO")) {
-                    if (std.c.setsockopt(listen_fd.?, std.posix.IPPROTO.IP, c.IP.PKTINFO, enabled.ptr, 1) != 0) {
+                    if (std.c.setsockopt(listen_fd.?, std.posix.IPPROTO.IP, c.IP.PKTINFO, &enabled, @sizeOf(c_int)) != 0) {
                         std.debug.print("Error setting IPv4 pktinfo!\n", .{});
                     }
                 } else if (@hasDecl(c.IP, "RECVDSTADDR")) {
-                    if (std.c.setsockopt(listen_fd.?, std.posix.IPPROTO.IP, c.IP.RECVDSTADDR, enabled.ptr, 1) != 0) {
+                    if (std.c.setsockopt(listen_fd.?, std.posix.IPPROTO.IP, c.IP.RECVDSTADDR, &enabled, @sizeOf(c_int)) != 0) {
                         std.debug.print("Error setting IPv4 pktinfo!\n", .{});
                     }
                 }
@@ -807,9 +811,9 @@ pub fn createUdpSocket(host: [:0]const u8, port: u32) !std.posix.socket_t {
         }
     }
 
-    if (std.c.setsockopt(listen_fd.?, std.posix.IPPROTO.IPV6, c.IPV6.RECVTCLASS, enabled.ptr, 1) == -1) {
+    if (std.c.setsockopt(listen_fd.?, std.posix.IPPROTO.IPV6, c.IPV6.RECVTCLASS, &enabled, @sizeOf(c_int)) == -1) {
         if (std.c._errno().* == 92) {
-            if (std.c.setsockopt(listen_fd.?, std.posix.IPPROTO.IP, c.IP.RECVTOS, enabled.ptr, 1) != 0) {
+            if (std.c.setsockopt(listen_fd.?, std.posix.IPPROTO.IP, c.IP.RECVTOS, &enabled, @sizeOf(c_int)) != 0) {
                 std.debug.print("Error setting IPv4 ECN!\n", .{});
             }
         } else {

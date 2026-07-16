@@ -49,8 +49,8 @@
             .hash = "boringssl-0.20260616.0-i67LCwBaAAAlSIpk3GmBVZ9lfubOq4fZxoEKYOCimxMX",
         },
         .lsquic = .{
-            .url = "git+https://github.com/cryptodeal/lsquic.git#9c8c368c606c8eb77a272209cb0591d137c97c32",
-            .hash = "lsquic-0.0.0-jO7gdosgAABQH6_32UdluESo7WRAOJZYARz3drHyhOow",
+            .url = "git+https://github.com/cryptodeal/lsquic.git#e7524773de9e695eedaabf2587f21f1e63a3e83d",
+            .hash = "lsquic-4.6.0-jO7gdqYgAAAXU7bUA0hrmUuUPDyq7IO162d5nAs7F998",
         },
     },
     .paths = .{
