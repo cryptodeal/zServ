@@ -1,6 +1,6 @@
 const build_opts = @import("build_opts");
 const std = @import("std");
-const bsd = @import("bsd.zig");
+const bsd = @import("bsd/root.zig");
 const Extension = @import("extension.zig");
 const openssl = @import("crypto/openssl.zig");
 const SocketContext = @import("socket_context.zig");

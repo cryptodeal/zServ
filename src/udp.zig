@@ -1,11 +1,11 @@
 const std = @import("std");
-const bsd = @import("bsd.zig");
+const bsd = @import("bsd/root.zig");
 const Loop = @import("eventing/impl.zig").Loop;
 const Poll = @import("eventing/impl.zig").Poll;
 const socket_readable = @import("eventing/impl.zig").socket_readable;
 const InternalCallback = @import("internal_callback.zig");
 
-pub const PacketBuffer = bsd.UdpPacketBuffer;
+pub const PacketBuffer = bsd.PacketBuffer;
 
 pub const Socket = struct {
     cb: InternalCallback,
@@ -30,7 +30,7 @@ pub const Socket = struct {
         errdefer {
             if (buf == null) receive_buf.deinit(allocator);
         }
-        var tmp: bsd.AddrT = undefined;
+        var tmp: bsd.Addr = undefined;
         try bsd.localAddr(fd, &tmp);
 
         const self = try allocator.create(Socket);
@@ -69,13 +69,13 @@ pub const Socket = struct {
         return buf.sendmmsg(fd, num, 0);
     }
 
-    pub fn receive(self: *Socket, buf: *PacketBuffer) usize {
+    pub fn receive(self: *Socket, buf: *PacketBuffer) !usize {
         const fd = self.cb.p.fd();
         return buf.recvmmsg(fd, bsd.udp_max_num, 0, null);
     }
 };
 
 pub fn onUdpRead(allocator: std.mem.Allocator, s: *Socket) !void {
-    const packets = s.receive(s.receive_buf);
+    const packets = try s.receive(s.receive_buf);
     try s.data_cb.?(allocator, s, s.receive_buf, packets);
 }

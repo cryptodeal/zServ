@@ -1,4 +1,4 @@
-const bsd = @import("../bsd.zig");
+const bsd = @import("../bsd/root.zig");
 const build_opts = @import("build_opts");
 const std = @import("std");
 const Extension = @import("../extension.zig");
@@ -9,11 +9,18 @@ const socket_writable = @import("../eventing/impl.zig").socket_writable;
 const Socket = @import("../socket.zig");
 const SocketContext = @import("../socket_context.zig");
 
-// TODO: flesh out `io_uring` implementation
-// pub const Timer = switch (build_opts.event_backend) {
-//     .io_uring => @import("../io_uring/timer.zig"),
-//     else => anyopaque,
-// };
+pub fn EnumError(comptime E: type) type {
+    switch (@typeInfo(E)) {
+        .@"enum" => {
+            var T: type = error{};
+            for (std.meta.fields(E)) |enum_field| {
+                T = T || @TypeOf(@field(anyerror, enum_field.name));
+            }
+            return T;
+        },
+        else => @compileError("EnumError only accepts enum types."),
+    }
+}
 
 pub const Timer = anyopaque;
 

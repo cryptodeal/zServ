@@ -1,4 +1,4 @@
-const bsd = @import("bsd.zig");
+const bsd = @import("bsd/root.zig");
 const std = @import("std");
 const Extension = @import("extension.zig");
 const Loop = @import("eventing/impl.zig").Loop;

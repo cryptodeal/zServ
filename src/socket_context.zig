@@ -1,5 +1,5 @@
 const build_opts = @import("build_opts");
-const bsd = @import("bsd.zig");
+const bsd = @import("bsd/root.zig");
 const std = @import("std");
 const Extension = @import("extension.zig");
 const Poll = @import("eventing/impl.zig").Poll;
@@ -58,8 +58,10 @@ pub fn internalInit(self: *Self, allocator: std.mem.Allocator, loop: *Loop, _: S
 
 pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
     if (build_opts.ssl_impl != .no_ssl) {
-        @as(*openssl.SslSocketContext, @fieldParentPtr("sc", self)).deinit(allocator);
-        return;
+        if (self.is_ssl) {
+            @as(*openssl.SslSocketContext, @fieldParentPtr("sc", self)).deinit(allocator);
+            return;
+        }
     }
     loop_.loopUnlink(self.loop, self);
     self.ext.deinit(allocator);

@@ -1,11 +1,18 @@
 const builtin = @import("builtin");
-const c = @import("internal/c.zig");
+const c = @import("c.zig");
+const EnumError = @import("../internal/internal.zig").EnumError;
+const cmsg = @import("cmsg.zig");
+const constants = @import("constants.zig");
 const std = @import("std");
 
-pub const udp_max_size = (64 * 1024);
-pub const udp_max_num = 1024;
+pub const udp_max_size = constants.udp_max_size;
+pub const udp_max_num = constants.udp_max_num;
+pub const PacketBuffer = switch (builtin.os.tag) {
+    .windows => @import("packet_buffer/windows.zig"),
+    else => @import("packet_buffer/generic.zig"),
+};
 
-pub const AddrT = extern struct {
+pub const Addr = extern struct {
     mem: std.posix.sockaddr.storage,
     len: std.posix.socklen_t,
     ip: [*c]u8,
@@ -13,219 +20,17 @@ pub const AddrT = extern struct {
     port: c_int,
 };
 
-pub const UdpPacketBuffer = switch (builtin.os.tag) {
-    .driverkit,
-    .ios,
-    .maccatalyst,
-    .macos,
-    .tvos,
-    .visionos,
-    .watchos,
-    .windows,
-    => extern struct {
-        const Self = @This();
-
-        buf: [udp_max_num][*]u8,
-        // length tracked separately as we allocate udp_max_size for each buf, but only use a specific length at any given time
-        len: [udp_max_num]usize,
-        addr: [udp_max_num]std.c.sockaddr.storage,
-
-        pub fn init(allocator: std.mem.Allocator) !*UdpPacketBuffer {
-            var packet_buffer = try allocator.create(UdpPacketBuffer);
-            packet_buffer.* = undefined;
-            for (0..udp_max_num) |i| {
-                packet_buffer.buf[i] = (try allocator.alloc(u8, udp_max_size)).ptr;
-            }
-            return packet_buffer;
-        }
-
-        pub fn deinit(self: *UdpPacketBuffer, allocator: std.mem.Allocator) void {
-            for (0..udp_max_num) |i| {
-                allocator.free(@as([]u8, self.buf[i][0..udp_max_size]));
-            }
-            allocator.destroy(self);
-        }
-
-        pub fn ecn(_: *Self, _: usize) u8 {
-            std.debug.print("ECN not supported!\n", .{});
-            return 0;
-        }
-
-        pub fn payload(self: *Self, index: usize) []u8 {
-            return self.buf[index][0..self.len[index]];
-        }
-
-        pub fn peer(self: *Self, index: usize) [*]u8 {
-            return @ptrCast(@alignCast(&self.addr[index]));
-        }
-
-        pub fn localIp(_: *Self, _: usize, _: []u8) []u8 {
-            return &.{};
-        }
-
-        pub fn setPayload(self: *Self, index: usize, _: usize, payload_: []u8, peer_addr: ?*anyopaque) void {
-            @memcpy(self.buf[index], payload_);
-            @memcpy(std.mem.asBytes(&self.addr[index]), @as([*]u8, @ptrCast(@alignCast(peer_addr)))[0..@sizeOf(std.posix.sockaddr.storage)]);
-            self.len[index] = payload_.len;
-        }
-
-        pub fn sendmmsg(self: *Self, fd: std.posix.fd_t, _: usize, flags: u32) !usize {
-            for (0..udp_max_num) |i| {
-                const ret = std.c.sendto(fd, self.buf[i], self.len[i], flags, @ptrCast(@alignCast(&self.addr[i])), @sizeOf(std.posix.sockaddr.in));
-                if (ret == -1) {
-                    return i;
-                }
-            }
-            return udp_max_num;
-        }
-
-        pub fn recvmmsg(self: *Self, fd: std.posix.fd_t, _: u32, flags: u32, _: ?*anyopaque) usize {
-            for (0..udp_max_num) |i| {
-                var addr_len: u32 = @sizeOf(std.c.sockaddr.storage);
-                const ret = std.c.recvfrom(fd, self.buf[i], udp_max_size, flags, @as(?*std.c.sockaddr, @ptrCast(@alignCast(&self.addr[i]))), &addr_len);
-                if (ret == -1) {
-                    return i;
-                }
-                self.len[i] = @intCast(ret);
-            }
-            return udp_max_num;
-        }
-    },
-    else => struct {
-        const Self = @This();
-
-        msgvec: [udp_max_num]std.c.mmsghdr,
-        iov: [udp_max_num]std.c.iovec,
-        addr: [udp_max_num]std.c.sockaddr.storage,
-        control: [udp_max_num][256]u8,
-
-        pub fn init(allocator: std.mem.Allocator) !*UdpPacketBuffer {
-            var packet_buffer = try allocator.create(UdpPacketBuffer);
-            packet_buffer.* = undefined;
-            for (0..udp_max_num) |i| {
-                packet_buffer.iov[i].base = (try allocator.alloc(u8, udp_max_size)).ptr;
-                packet_buffer.iov[i].len = udp_max_size;
-                packet_buffer.msgvec[i].hdr = .{
-                    .name = @ptrCast(@alignCast(&packet_buffer.addr[i])),
-                    .namelen = @sizeOf(std.c.sockaddr.storage),
-                    .iov = @ptrCast(@alignCast(&packet_buffer.iov[i])),
-                    .iovlen = 1,
-                    .control = &packet_buffer.control[i],
-                    .controllen = 256,
-                    .flags = undefined,
-                };
-            }
-            return packet_buffer;
-        }
-
-        pub fn deinit(self: *UdpPacketBuffer, allocator: std.mem.Allocator) void {
-            for (0..udp_max_num) |i| {
-                allocator.free(@as([]u8, self.iov[i].base[0..udp_max_size]));
-            }
-            allocator.destroy(self);
-        }
-
-        pub fn ecn(self: *Self, index: usize) u8 {
-            const mh = &@as([*]std.c.mmsghdr, &self.msgvec)[index].hdr;
-            var maybe_cmsg = cmsg.firsthdr(mh);
-            while (maybe_cmsg) |c_| : (maybe_cmsg = cmsg.nexthdr(mh, c_)) {
-                if (c_.level == std.posix.IPPROTO.IP and c_.type == c.IP.TOS) {
-                    const tos: u8 = cmsg.data(c_)[0];
-                    return tos & 3;
-                }
-                if (c_.level == std.posix.IPPROTO.IPV6 and c_.type == c.IPV6.TCLASS) {
-                    const tos: u8 = cmsg.data(c_)[0];
-                    return tos & 3;
-                }
-            }
-            std.debug.print("We got no ECN!\n", .{});
-            return 0;
-        }
-
-        pub fn payload(self: *Self, index: usize) []u8 {
-            return @as([*]std.c.mmsghdr, &self.msgvec)[index].hdr.iov[0].base[0..@as([*]std.c.mmsghdr, &self.msgvec)[index].len];
-        }
-
-        pub fn peer(self: *Self, index: usize) [*]u8 {
-            return @ptrCast(@alignCast(@as([*]std.c.mmsghdr, &self.msgvec)[index].hdr.name));
-        }
-
-        pub fn localIp(self: *Self, index: usize, buf: []u8) []u8 {
-            const mh: *std.c.msghdr = &@as([*]std.c.mmsghdr, &self.msgvec)[index].hdr;
-            var maybe_cmsghdr = cmsg.firsthdr(mh);
-            while (maybe_cmsghdr) |cmsghdr| {
-                if (cmsghdr.level == std.c.IPPROTO.IP and cmsghdr.type == c.IP.PKTINFO) {
-                    std.debug.assert(buf.len >= 4);
-                    const pi: *std.c.in_pktinfo = @ptrCast(@alignCast(cmsg.data(cmsghdr)));
-                    @memcpy(buf[0..4], std.mem.asBytes(&pi.addr)[0..4]);
-                    return buf[0..4];
-                }
-                if (cmsghdr.level == std.c.IPPROTO.IP and @hasDecl(c.IP, "RECVDSTADDR") and cmsghdr.type == c.IP.RECVDSTADDR) {
-                    std.debug.assert(buf.len >= 4);
-                    const addr: [*]u8 = @ptrCast(@alignCast(cmsg.data(cmsghdr)));
-                    @memcpy(buf[0..4], addr[0..4]);
-                    return buf[0..4];
-                }
-                if (cmsghdr.level == std.c.IPPROTO.IPV6 and cmsghdr.type == c.IPV6.PKTINFO) {
-                    std.debug.assert(buf.len >= 16);
-                    const pi6: *std.c.in6_pktinfo = @ptrCast(@alignCast(cmsg.data(cmsghdr)));
-                    @memcpy(buf[0..16], pi6.addr[0..16]);
-                    return buf[0..16];
-                }
-                maybe_cmsghdr = cmsg.nexthdr(mh, cmsghdr);
-            }
-            return &.{};
-        }
-
-        pub fn setPayload(self: *Self, index: usize, offset: usize, payload_: []u8, peer_addr: ?*anyopaque) void {
-            const send_buf: [*]std.c.mmsghdr = &self.msgvec;
-            @memcpy(std.mem.asBytes(send_buf[index].hdr.name.?), @as([*]u8, @ptrCast(@alignCast(peer_addr)))[0..@sizeOf(std.c.sockaddr.in)]);
-            send_buf[index].hdr.controllen = 0;
-            send_buf[index].hdr.iov[0].len = payload_.len + offset;
-            @memcpy(send_buf[index].hdr.iov[0].base + offset, payload_);
-        }
-
-        pub fn sendmmsg(self: *Self, fd: std.posix.fd_t, vlen: u32, flags: u32) !usize {
-            const msgvec: [*]std.c.mmsghdr = &self.msgvec;
-            return std.os.linux.sendmmsg(fd, msgvec, vlen, flags | std.c.MSG.NOSIGNAL);
-        }
-
-        pub fn recvmmsg(self: *Self, fd: std.posix.fd_t, vlen: u32, flags: u32, _: ?*anyopaque) usize {
-            for (0..vlen) |i| {
-                @as([*]std.c.mmsghdr, &self.msgvec)[i].hdr.controllen = 256;
-            }
-            return std.os.linux.recvmmsg(fd, @as([*]std.c.mmsghdr, &self.msgvec), vlen, @intCast(flags), null);
-        }
-    },
-};
-
 pub fn sendmmsg(
     fd: std.c.fd_t,
     msgvec: switch (builtin.os.tag) {
-        .driverkit,
-        .ios,
-        .maccatalyst,
-        .macos,
-        .tvos,
-        .visionos,
-        .watchos,
-        .windows,
-        => *UdpPacketBuffer,
+        .windows => *PacketBuffer,
         else => [*]std.c.mmsghdr,
     },
-    vlen: u32,
+    vlen: usize,
     flags: u32,
 ) !usize {
     switch (builtin.os.tag) {
-        .driverkit,
-        .ios,
-        .maccatalyst,
-        .macos,
-        .tvos,
-        .visionos,
-        .watchos,
-        .windows,
-        => {
+        .windows => {
             for (0..udp_max_num) |i| {
                 const ret = std.c.sendto(fd, msgvec.buf[i], msgvec.len[i], flags, @ptrCast(@alignCast(&msgvec.addr[i])), @sizeOf(std.posix.sockaddr.in));
                 if (ret == -1) {
@@ -234,18 +39,6 @@ pub fn sendmmsg(
             }
             return udp_max_num;
         },
-        else => return std.os.linux.sendmmsg(fd, msgvec, vlen, flags | std.c.MSG.NOSIGNAL),
-    }
-}
-
-pub fn recvmmsg(
-    fd: std.posix.fd_t,
-    msgvec: *UdpPacketBuffer,
-    vlen: u32,
-    flags: i32,
-    _: ?*anyopaque,
-) usize {
-    switch (builtin.os.tag) {
         .driverkit,
         .ios,
         .maccatalyst,
@@ -253,8 +46,49 @@ pub fn recvmmsg(
         .tvos,
         .visionos,
         .watchos,
-        .windows,
         => {
+            // TODO: leverage `sendmsg_x` private api
+            if (c.supportSendRecvMsgX()) {
+                while (true) {
+                    const ret = c.sendmsg_x(fd, msgvec, @intCast(vlen), @intCast(flags));
+                    if (ret >= 0) return @intCast(ret);
+                    const err = std.c.errno(ret);
+                    if (err == .MSGSIZE) break;
+                    if (err != .INTR) return error.SendMmsg;
+                }
+            }
+            const hdrs: [*]extern struct { msghdr: std.c.msghdr_const, len: u32 } = @ptrCast(@alignCast(msgvec));
+            for (0..vlen) |i| {
+                const ret = std.c.sendmsg(fd, &hdrs[i].msghdr, flags);
+                if (ret == -1) {
+                    if (i != 0) {
+                        return i;
+                    } else {
+                        std.debug.print("errno: {s}\n", .{@tagName(std.c.errno(ret))});
+                        return error.SendMmsg;
+                    }
+                } else {
+                    hdrs[i].len = @intCast(ret);
+                }
+            }
+            return vlen;
+        },
+        else => return std.os.linux.sendmmsg(fd, msgvec, vlen, flags | std.c.MSG.NOSIGNAL),
+    }
+}
+
+pub fn recvmmsg(
+    fd: std.posix.fd_t,
+    msgvec: switch (builtin.os.tag) {
+        .windows => *PacketBuffer,
+        else => [*]std.c.mmsghdr,
+    },
+    vlen: usize,
+    flags: u32,
+    _: ?*anyopaque,
+) !usize {
+    switch (builtin.os.tag) {
+        .windows => {
             for (0..udp_max_num) |i| {
                 const addr_len = @sizeOf(std.c.sockaddr.storage);
                 const ret = std.c.recvfrom(fd, msgvec.buf[i], flags, @as(?*std.c.sockaddr, @ptrCast(@alignCast(&msgvec.addr[i]))), &addr_len);
@@ -265,197 +99,139 @@ pub fn recvmmsg(
             }
             return udp_max_num;
         },
+        .driverkit,
+        .ios,
+        .maccatalyst,
+        .macos,
+        .tvos,
+        .visionos,
+        .watchos,
+        => {
+            // TODO: leverage `recvmsg_x` private api
+            if (c.supportSendRecvMsgX()) {
+                while (true) {
+                    const ret = c.recvmsg_x(fd, msgvec, @intCast(vlen), @intCast(flags));
+                    if (ret >= 0) return @intCast(ret);
+                    if (std.c.errno(ret) != .INTR) return error.RecvMmsgX;
+                }
+            }
+            for (0..udp_max_num) |i| {
+                msgvec[i].hdr.controllen = 256;
+                const ret = std.c.recvmsg(fd, &msgvec[i].hdr, flags);
+                if (ret == -1) {
+                    return i;
+                }
+                msgvec[i].len = @intCast(ret);
+            }
+            return udp_max_num;
+        },
         else => {
             for (0..vlen) |i| {
-                @as([*]std.c.mmsghdr, &msgvec.msgvec)[i].hdr.controllen = 256;
+                msgvec[i].hdr.controllen = 256;
             }
-            return std.os.linux.recvmmsg(fd, @as([*]std.c.mmsghdr, &msgvec.msgvec), vlen, @intCast(flags), null);
+            return std.os.linux.recvmmsg(fd, msgvec, vlen, @intCast(flags), null);
         },
     }
 }
 
-const cmsg = struct {
-    pub inline fn @"align"(length: usize) usize {
-        const size_t_size: usize = @sizeOf(usize);
-        const rem_bits: usize = size_t_size - 1;
-        return (length + rem_bits) & (~rem_bits);
-    }
-
-    pub inline fn firsthdr(mhdr: *std.c.msghdr) ?*std.c.cmsghdr {
-        return if (mhdr.controllen >= @sizeOf(std.c.cmsghdr)) @ptrCast(@alignCast(mhdr.control)) else null;
-    }
-
-    pub inline fn data(mhdr: *std.c.cmsghdr) [*]u8 {
-        return @as([*]u8, @ptrCast(@alignCast(mhdr))) + @"align"(@sizeOf(std.c.cmsghdr));
-    }
-
-    inline fn padding(len: usize) usize {
-        return ((@sizeOf(usize) - ((len) & (@sizeOf(usize) - 1))) & (@sizeOf(usize) - 1));
-    }
-
-    pub inline fn nexthdr(mhdr: *std.c.msghdr, cmsghdr: *std.c.cmsghdr) ?*std.c.cmsghdr {
-        const msg_control_ptr: [*]u8 = @ptrCast(@alignCast(mhdr.control));
-        const cmsg_ptr: [*]u8 = @ptrCast(@alignCast(cmsghdr));
-        const size_needed: usize = @sizeOf(std.c.cmsghdr) + cmsg.padding(cmsghdr.len);
-
-        if (cmsghdr.len < @sizeOf(std.c.cmsghdr))
-            return null;
-
-        if ((@intFromPtr(msg_control_ptr) + mhdr.controllen - @intFromPtr(cmsg_ptr) < size_needed) or (@intFromPtr(msg_control_ptr) + mhdr.controllen - @intFromPtr(cmsg_ptr) - size_needed < cmsghdr.len))
-            return null;
-
-        return @ptrCast(@alignCast(@as([*]u8, @ptrCast(@alignCast(cmsghdr))) + @"align"(cmsghdr.len)));
-    }
-};
-
 pub fn udpPacketBufferLocalIp(
     msgvec: switch (builtin.os.tag) {
-        .driverkit,
-        .ios,
-        .maccatalyst,
-        .macos,
-        .tvos,
-        .visionos,
-        .watchos,
-        .windows,
-        => ?*anyopaque,
+        .windows => *PacketBuffer,
         else => [*]std.c.mmsghdr,
     },
     index: usize,
     ip: []u8,
-) usize {
+) ![]u8 {
     switch (builtin.os.tag) {
-        .driverkit,
-        .ios,
-        .maccatalyst,
-        .macos,
-        .tvos,
-        .visionos,
-        .watchos,
-        .windows,
-        => return 0,
+        .windows => return &.{},
         else => {
+            // TODO: implement for darwin
+            if (builtin.os.tag.isDarwin()) return &.{};
             const mh: *std.c.msghdr = &msgvec[index].hdr;
             var maybe_cmsghdr = cmsg.firsthdr(mh);
             while (maybe_cmsghdr) |cmsghdr| {
                 if (cmsghdr.level == std.c.IPPROTO.IP and cmsghdr.type == c.IP.PKTINFO) {
+                    if (ip.len < 4) return error.NoSpaceLeft;
                     const pi: *std.c.in_pktinfo = @ptrCast(@alignCast(cmsg.data(cmsghdr)));
                     @memcpy(ip[0..4], std.mem.asBytes(&pi.addr)[0..4]);
-                    return 4;
+                    return ip[0..4];
                 }
                 if (cmsghdr.level == std.c.IPPROTO.IP and cmsghdr.type == c.IP.RECVDSTADDR) {
                     const addr: [*]u8 = @ptrCast(@alignCast(cmsg.data(cmsghdr)));
                     @memcpy(ip[0..4], addr[0..4]);
-                    return 4;
+                    return ip[0..4];
                 }
                 if (cmsghdr.level == std.c.IPPROTO.IPV6 and cmsghdr.type == c.IPV6.PKTINFO) {
                     const pi6: *std.c.in6_pktinfo = @ptrCast(@alignCast(cmsg.data(cmsghdr)));
                     @memcpy(ip[0..16], pi6.addr[0..16]);
-                    return 16;
+                    return ip[0..16];
                 }
                 maybe_cmsghdr = cmsg.nexthdr(mh, cmsghdr);
             }
-            return 0;
+            return &.{};
         },
     }
 }
 
 pub fn udpPacketBufferPeer(
     msgvec: switch (builtin.os.tag) {
-        .driverkit,
-        .ios,
-        .maccatalyst,
-        .macos,
-        .tvos,
-        .visionos,
-        .watchos,
-        .windows,
-        => *UdpPacketBuffer,
+        .windows => *PacketBuffer,
         else => [*]std.c.mmsghdr,
     },
-    index: u32,
+    index: usize,
 ) [*]u8 {
     switch (builtin.os.tag) {
-        .driverkit,
-        .ios,
-        .maccatalyst,
-        .macos,
-        .tvos,
-        .visionos,
-        .watchos,
-        .windows,
-        => return @ptrCast(@alignCast(&msgvec.addr[index])),
+        .windows => return @ptrCast(@alignCast(&msgvec.addr[index])),
         else => return @ptrCast(@alignCast(msgvec[index].hdr.name)),
     }
 }
 
 pub fn udpPacketBufferPayload(
     msgvec: switch (builtin.os.tag) {
-        .driverkit,
-        .ios,
-        .maccatalyst,
-        .macos,
-        .tvos,
-        .visionos,
-        .watchos,
-        .windows,
-        => *UdpPacketBuffer,
+        .windows => *PacketBuffer,
         else => [*]std.c.mmsghdr,
     },
-    index: u32,
+    index: usize,
 ) []u8 {
     switch (builtin.os.tag) {
-        .driverkit,
-        .ios,
-        .maccatalyst,
-        .macos,
-        .tvos,
-        .visionos,
-        .watchos,
-        .windows,
-        => return &msgvec.buf[index][0..msgvec.len[index]],
+        .windows => return &msgvec.buf[index][0..msgvec.len[index]],
         else => return msgvec[index].hdr.iov[0].base[0..msgvec[index].len],
     }
 }
 
-pub fn udpBufferSetPacketPayload(
+pub fn udpPacketBufferSetPayload(
     send_buf: switch (builtin.os.tag) {
-        .driverkit,
-        .ios,
-        .maccatalyst,
-        .macos,
-        .tvos,
-        .visionos,
-        .watchos,
-        .windows,
-        => *UdpPacketBuffer,
+        .windows => *PacketBuffer,
         else => [*]std.c.mmsghdr,
     },
-    index: u32,
-    offset: u32,
+    index: usize,
+    offset: usize,
     payload: []u8,
     // TODO: should be able to specify type here depending on OS
     peer_addr: ?*anyopaque,
 ) void {
     switch (builtin.os.tag) {
-        .driverkit,
-        .ios,
-        .maccatalyst,
-        .macos,
-        .tvos,
-        .visionos,
-        .watchos,
-        .windows,
-        => {
+        .windows => {
             @memcpy(send_buf.buf[index], payload);
             @memcpy(std.mem.asBytes(&send_buf.addr[index]), @as([*]u8, @ptrCast(@alignCast(peer_addr)))[0..@sizeOf(std.posix.sockaddr.storage)]);
             send_buf.len[index] = payload.len;
         },
         else => {
-            @memcpy(std.mem.asBytes(send_buf[index].hdr.name), @as([*]u8, @ptrCast(@alignCast(peer_addr)))[0..@sizeOf(std.c.sockaddr.in)]);
+            if (peer_addr) |addr| {
+                @memcpy(std.mem.asBytes(@as(*std.c.sockaddr.storage, @ptrCast(@alignCast(send_buf[index].hdr.name.?)))), @as([*]u8, @ptrCast(@alignCast(addr)))[0..@sizeOf(std.c.sockaddr.storage)]);
+                send_buf[index].hdr.namelen = switch (@as(*std.c.sockaddr, @ptrCast(@alignCast(addr))).family) {
+                    std.c.AF.INET6 => @sizeOf(std.c.sockaddr.in6),
+                    std.c.AF.INET => @sizeOf(std.c.sockaddr.in),
+                    else => 0,
+                };
+            } else send_buf[index].hdr.namelen = 0;
+            // might need to be set `null` on other platforms
+            if (builtin.os.tag.isDarwin()) {
+                send_buf[index].hdr.control = null;
+            }
             send_buf[index].hdr.controllen = 0;
             send_buf[index].hdr.iov[0].len = payload.len + offset;
-            @memcpy(send_buf[index].hdr.iov[0].base + offset[0..payload.len], payload);
+            @memcpy((send_buf[index].hdr.iov[0].base + offset)[0..payload.len], payload);
         },
     }
 }
@@ -547,7 +323,7 @@ pub fn shutdownSocketRead(fd: std.posix.socket_t) void {
     };
 }
 
-fn internalFinalizeBsdAddr(addr: *AddrT) void {
+fn internalFinalizeBsdAddr(addr: *Addr) void {
     // TODO: verify that casting `&addr.mem` works as it does in the uSockets impl
     if (addr.mem.family == std.posix.AF.INET6) {
         addr.ip = &@as(*std.posix.sockaddr.in6, @ptrCast(@alignCast(addr))).addr;
@@ -563,13 +339,13 @@ fn internalFinalizeBsdAddr(addr: *AddrT) void {
     }
 }
 
-pub fn localAddr(fd: std.posix.socket_t, addr: *AddrT) !void {
+pub fn localAddr(fd: std.posix.socket_t, addr: *Addr) !void {
     addr.len = @sizeOf(std.posix.sockaddr.storage);
     if (std.c.getsockname(fd, @ptrCast(@alignCast(&addr.mem)), &addr.len) != 0) return error.LocalAddr;
     internalFinalizeBsdAddr(addr);
 }
 
-pub fn remoteAddr(fd: std.posix.socket_t, addr: *AddrT) !void {
+pub fn remoteAddr(fd: std.posix.socket_t, addr: *Addr) !void {
     addr.len = @sizeOf(std.posix.sockaddr.storage);
     switch (builtin.os.tag) {
         .linux => if (std.os.linux.getpeername(fd, @ptrCast(@alignCast(&addr.mem)), addr.len) != 0) return error.LinuxRemoteAddr,
@@ -578,7 +354,7 @@ pub fn remoteAddr(fd: std.posix.socket_t, addr: *AddrT) !void {
     internalFinalizeBsdAddr(addr);
 }
 
-pub fn acceptSocket(fd: std.posix.socket_t, addr: *AddrT) !std.posix.socket_t {
+pub fn acceptSocket(fd: std.posix.socket_t, addr: *Addr) !std.posix.socket_t {
     addr.len = @sizeOf(std.posix.sockaddr.storage);
     const accepted_fd: std.posix.socket_t = switch (builtin.os.tag) {
         .linux => blk: {
@@ -830,11 +606,18 @@ pub fn createUdpSocket(host: [:0]const u8, port: u32) !std.posix.socket_t {
     return listen_fd.?;
 }
 
-pub fn udpPacketBufferEcn(msgvec: ?*anyopaque, index: usize) u8 {
+pub fn udpPacketBufferEcn(
+    msgvec: switch (builtin.os.tag) {
+        .windows => *PacketBuffer,
+        else => [*]std.c.mmsghdr,
+    },
+    index: usize,
+) u8 {
     if (builtin.os.tag.isDarwin() or builtin.os.tag == .windows) {
         std.debug.print("ECN not supported!\n", .{});
     } else {
-        const mh = &@as([*]std.c.mmsghdr, @ptrCast(@alignCast(msgvec)))[index].hdr;
+        // TODO: implement for darwin
+        const mh = msgvec[index].hdr;
         var maybe_cmsg = cmsg.firsthdr(mh);
         while (maybe_cmsg) |c_| : (maybe_cmsg = cmsg.nexthdr(mh, c_)) {
             if (c_.level == std.posix.IPPROTO.IP and c_.type == c.IP.TOS) {

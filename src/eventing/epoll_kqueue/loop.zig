@@ -66,9 +66,6 @@ pub fn run(self: *Self, allocator: std.mem.Allocator) !void {
         self.current_ready_poll = 0;
         while (self.current_ready_poll < self.ready_polls_count) : (self.current_ready_poll += 1) {
             if (self.getReadyPoll(self.current_ready_poll)) |p| {
-                // if (p.pollType() == .callback)
-                // std.debug.print("loop - poll_type: {s}\n", .{@tagName(p.pollType())});
-
                 var events: u32 = undefined;
                 var err: u32 = undefined;
                 if (build_opts.event_backend == .epoll) {

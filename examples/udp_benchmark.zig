@@ -31,8 +31,8 @@ fn onServerData(_: std.mem.Allocator, s: *zs.udp.Socket, buf: *zs.udp.PacketBuff
         const peer_addr = buf.peer(i);
 
         // var ip_buf: [16]u8 = undefined;
-        // const ip = buf.localIp(i, &ip_buf);
-        // // std.debug.print("local_ip: {s}\n", .{ip});
+        // const ip = try buf.localIp(i, &ip_buf);
+        // std.debug.print("local_ip: {s}\n", .{ip});
         // if (ip.len == 0) {
         //     std.debug.print("We got no ip on received packet!\n", .{});
         //     std.process.exit(0);
@@ -103,7 +103,7 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("Failed to create UDP sockets!\n", .{});
         return error.FailedToCreateUdpSockets;
     }
-    var storage: std.c.sockaddr.storage = undefined;
+    var storage = std.mem.zeroes(std.c.sockaddr.storage);
     if (is_ipv6) {
         var addr: *std.c.sockaddr.in6 = @ptrCast(@alignCast(&storage));
         addr.addr[15] = 1;

@@ -1,6 +1,6 @@
 const build_opts = @import("build_opts");
 const constants = @import("internal/constants.zig");
-const bsd = @import("bsd.zig");
+const bsd = @import("bsd/root.zig");
 const std = @import("std");
 const Extension = @import("extension.zig");
 const timerSet = @import("eventing/impl.zig").timerSet;
@@ -146,7 +146,6 @@ pub fn adoptAcceptedSocket(allocator: std.mem.Allocator, ssl: bool, context: *So
 }
 
 pub fn internalDispatchReadyPoll(allocator: std.mem.Allocator, p: *Poll, err: u32, events: u32) !void {
-    // std.debug.print("poll_type: {s}\n", .{@tagName(p.pollType())});
     outer: switch (p.pollType()) {
         .callback => {
             const cb: *InternalCallback = @fieldParentPtr("p", p);
@@ -155,15 +154,9 @@ pub fn internalDispatchReadyPoll(allocator: std.mem.Allocator, p: *Poll, err: u3
                     _ = p.acceptEvent();
                 }
             }
-            // std.debug.print("poll_type: callback\n", .{});
-            // TODO: uSockets casts loop/poll, might need to do that, but verify with once further implemented
-            // try cb.cb.?(allocator, if (cb.expects_loop) @ptrCast(@alignCast(cb.loop)) else @ptrCast(@alignCast(&cb.p)));
             try cb.cb.?(allocator, if (cb.expects_loop) @ptrCast(@alignCast(cb.loop)) else cb);
-
-            // try cb.cb.?(allocator, cb);
         },
         .semi_socket => {
-            // std.debug.print("poll_type: semi_socket -- events: {d} -- socket_writable: {d}\n", .{ p.events(), socket_writable });
             if (p.events() == socket_writable) {
                 const s: *Socket = @fieldParentPtr("p", p);
                 if (err != 0) {
@@ -178,7 +171,7 @@ pub fn internalDispatchReadyPoll(allocator: std.mem.Allocator, p: *Poll, err: u3
                 }
             } else {
                 const listen_socket: *ListenSocket = @fieldParentPtr("s", @as(*Socket, @fieldParentPtr("p", p)));
-                var addr: bsd.AddrT = undefined;
+                var addr: bsd.Addr = undefined;
                 var client_fd: std.posix.socket_t = undefined;
                 inner: while (bsd.acceptSocket(p.fd(), &addr)) |fd| {
                     client_fd = fd;
