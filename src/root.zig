@@ -15,7 +15,7 @@ pub const SocketContextOptions = @import("socket_context_options.zig");
 pub const InternalCallback = @import("internal_callback.zig");
 pub const ListenSocket = @import("listen_socket.zig");
 pub const Timer = @import("internal/internal.zig").Timer;
-// pub const quic = @import("quic.zig");
+pub const quic = @import("quic.zig");
 pub const udp = @import("udp.zig");
 
 pub const constants = @import("internal/constants.zig");

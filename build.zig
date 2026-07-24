@@ -73,6 +73,9 @@ pub fn build(b: *std.Build) !void {
 
     if (with_quic) {
         if (b.lazyDependency("lsquic", .{ .target = target, .optimize = optimize })) |lsquic_dep| {
+            mod.addCSourceFile(.{
+                .file = b.path("src/quic.c"),
+            });
             const lib_lsquic = lsquic_dep.artifact("lsquic");
             const translate_c = b.addTranslateC(.{
                 .root_source_file = b.path("src/quic.h"),
@@ -259,17 +262,54 @@ pub fn build(b: *std.Build) !void {
         }),
     });
 
-    // This declares intent for the executable to be installed into the
-    // install prefix when running `zig build` (i.e. when executing the default
-    // step). By default the install prefix is `zig-out/` but can be overridden
-    // by passing `--prefix` or `-p`.
-    b.installArtifact(echo_server_exe);
-    b.installArtifact(tcp_server_exe);
-    b.installArtifact(hammer_test_unix_exe);
-    b.installArtifact(hammer_test_exe);
-    b.installArtifact(http_load_test_exe);
-    b.installArtifact(http_server_exe);
-    b.installArtifact(tcp_load_test_exe);
+    const udp_benchmark_exe = b.addExecutable(.{
+        .name = "udp_benchmark",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/udp_benchmark.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zServ", .module = mod },
+                .{ .name = "args", .module = b.dependency("args", .{ .target = target, .optimize = optimize }).module("args") },
+            },
+        }),
+    });
+
+    const http3_client_exe = b.addExecutable(.{
+        .name = "http3_client",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/http3_client.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zServ", .module = mod },
+            },
+        }),
+    });
+
+    const http3_server_exe = b.addExecutable(.{
+        .name = "http3_server",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/http3_server.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zServ", .module = mod },
+            },
+        }),
+    });
+
+    const peer_verify_test_exe = b.addExecutable(.{
+        .name = "peer_verify_test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/peer_verify_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zServ", .module = mod },
+            },
+        }),
+    });
 
     // This creates a top level step. Top level steps have a name and can be
     // invoked by name when running `zig build` (e.g. `zig build run`).
@@ -283,6 +323,46 @@ pub fn build(b: *std.Build) !void {
     const http_load_test_run_step = b.step("http_load_test", "Run the http_load_test example");
     const http_server_run_step = b.step("http_server", "Run the http_server example");
     const tcp_load_test_run_step = b.step("tcp_load_test", "Run the tcp_load_test example");
+    const udp_benchmark_run_step = b.step("udp_benchmark", "Run the udp_benchmark example");
+    const http3_client_run_step = b.step("http3_client", "Run the http3_client example");
+    const http3_server_run_step = b.step("http3_server", "Run the http3_server example");
+    const peer_verify_test_run_step = b.step("peer_verify_test", "Run the peer_verify_test example");
+
+    // This creates an InstallArtifact step in the build graph. An InstallArtifact
+    // step declares intent for the executable to be installed into the install prefix
+    // when running `zig build step_name`.
+    const echo_server_install_cmd = b.addInstallArtifact(echo_server_exe, .{});
+    echo_server_run_step.dependOn(&echo_server_install_cmd.step);
+
+    const tcp_server_install_cmd = b.addInstallArtifact(tcp_server_exe, .{});
+    tcp_server_run_step.dependOn(&tcp_server_install_cmd.step);
+
+    const hammer_test_unix_install_cmd = b.addInstallArtifact(hammer_test_unix_exe, .{});
+    hammer_test_unix_run_step.dependOn(&hammer_test_unix_install_cmd.step);
+
+    const hammer_test_install_cmd = b.addInstallArtifact(hammer_test_exe, .{});
+    hammer_test_run_step.dependOn(&hammer_test_install_cmd.step);
+
+    const http_load_test_install_cmd = b.addInstallArtifact(http_load_test_exe, .{});
+    http_load_test_run_step.dependOn(&http_load_test_install_cmd.step);
+
+    const http_server_install_cmd = b.addInstallArtifact(http_server_exe, .{});
+    http_server_run_step.dependOn(&http_server_install_cmd.step);
+
+    const tcp_load_test_install_cmd = b.addInstallArtifact(tcp_load_test_exe, .{});
+    tcp_load_test_run_step.dependOn(&tcp_load_test_install_cmd.step);
+
+    const udp_benchmark_install_cmd = b.addInstallArtifact(udp_benchmark_exe, .{});
+    udp_benchmark_run_step.dependOn(&udp_benchmark_install_cmd.step);
+
+    const http3_client_install_cmd = b.addInstallArtifact(http3_client_exe, .{});
+    http3_client_run_step.dependOn(&http3_client_install_cmd.step);
+
+    const http3_server_install_cmd = b.addInstallArtifact(http3_server_exe, .{});
+    http3_server_run_step.dependOn(&http3_server_install_cmd.step);
+
+    const peer_verify_test_install_cmd = b.addInstallArtifact(peer_verify_test_exe, .{});
+    peer_verify_test_run_step.dependOn(&peer_verify_test_install_cmd.step);
 
     // This creates a RunArtifact step in the build graph. A RunArtifact step
     // invokes an executable compiled by Zig. Steps will only be executed by the
@@ -311,6 +391,18 @@ pub fn build(b: *std.Build) !void {
     const tcp_load_test_run_cmd = b.addRunArtifact(tcp_load_test_exe);
     tcp_load_test_run_step.dependOn(&tcp_load_test_run_cmd.step);
 
+    const udp_benchmark_run_cmd = b.addRunArtifact(udp_benchmark_exe);
+    udp_benchmark_run_step.dependOn(&udp_benchmark_run_cmd.step);
+
+    const http3_client_run_cmd = b.addRunArtifact(http3_client_exe);
+    http3_client_run_step.dependOn(&http3_client_run_cmd.step);
+
+    const http3_server_run_cmd = b.addRunArtifact(http3_server_exe);
+    http3_server_run_step.dependOn(&http3_server_run_cmd.step);
+
+    const peer_verify_test_run_cmd = b.addRunArtifact(peer_verify_test_exe);
+    peer_verify_test_run_step.dependOn(&peer_verify_test_run_cmd.step);
+
     // By making the run step depend on the default step, it will be run from the
     // installation directory rather than directly from within the cache directory.
     echo_server_run_cmd.step.dependOn(b.getInstallStep());
@@ -320,6 +412,10 @@ pub fn build(b: *std.Build) !void {
     http_load_test_run_cmd.step.dependOn(b.getInstallStep());
     http_server_run_cmd.step.dependOn(b.getInstallStep());
     tcp_load_test_run_cmd.step.dependOn(b.getInstallStep());
+    udp_benchmark_run_cmd.step.dependOn(b.getInstallStep());
+    http3_client_run_cmd.step.dependOn(b.getInstallStep());
+    http3_server_run_cmd.step.dependOn(b.getInstallStep());
+    peer_verify_test_run_cmd.step.dependOn(b.getInstallStep());
 
     // This allows the user to pass arguments to the application in the build
     // command itself, like this: `zig build run -- arg1 arg2 etc`
@@ -331,6 +427,10 @@ pub fn build(b: *std.Build) !void {
         http_load_test_run_cmd.addArgs(args);
         http_server_run_cmd.addArgs(args);
         tcp_load_test_run_cmd.addArgs(args);
+        udp_benchmark_run_cmd.addArgs(args);
+        http3_client_run_cmd.addArgs(args);
+        http3_server_run_cmd.addArgs(args);
+        peer_verify_test_run_cmd.addArgs(args);
     }
 
     // Creates an executable that will run `test` blocks from the provided module.

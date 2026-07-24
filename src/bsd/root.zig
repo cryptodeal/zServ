@@ -54,7 +54,10 @@ pub fn sendmmsg(
                     if (ret >= 0) return @intCast(ret);
                     const err = std.c.errno(ret);
                     if (err == .MSGSIZE) break;
-                    if (err != .INTR) return error.SendMmsg;
+                    if (err != .INTR) {
+                        // std.debug.print("errno: {s}\n", .{@tagName(std.c.errno(ret))});
+                        return error.SendMmsgX;
+                    }
                 }
             }
             const hdrs: [*]extern struct { msghdr: std.c.msghdr_const, len: u32 } = @ptrCast(@alignCast(msgvec));
@@ -64,7 +67,7 @@ pub fn sendmmsg(
                     if (i != 0) {
                         return i;
                     } else {
-                        std.debug.print("errno: {s}\n", .{@tagName(std.c.errno(ret))});
+                        // std.debug.print("errno: {s}\n", .{@tagName(std.c.errno(ret))});
                         return error.SendMmsg;
                     }
                 } else {
